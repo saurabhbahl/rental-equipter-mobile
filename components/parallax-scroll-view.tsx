@@ -1,3 +1,10 @@
+/**
+ * PARALLAX SCROLL VIEW
+ * A scroll view with a header image that moves and scales as you scroll (parallax effect).
+ * Uses react-native-reanimated for smooth animations. The header translates and scales based on scroll offset.
+ * Not used on the main home screen in this app; available for screens that need a fancy scroll header.
+ */
+
 import type { PropsWithChildren, ReactElement } from 'react';
 import { StyleSheet } from 'react-native';
 import Animated, {

@@ -1,6 +1,8 @@
 /**
- * Below are the colors that are used in the app. The colors are defined in the light and dark mode.
- * There are many other ways to style your app. For example, [Nativewind](https://www.nativewind.dev/), [Tamagui](https://tamagui.dev/), [unistyles](https://reactnativeunistyles.vercel.app), etc.
+ * THEME (colors and fonts)
+ * Colors: light and dark palette (text, background, tint, tab icons). Used by ThemedText, ThemedView, and hooks.
+ * Fonts: platform-specific font families (sans, serif, rounded, mono) for iOS, web, and default.
+ * You can swap this for other styling solutions (Nativewind, Tamagui, etc.) if you prefer.
  */
 
 import { Platform } from 'react-native';

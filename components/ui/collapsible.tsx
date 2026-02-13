@@ -1,3 +1,9 @@
+/**
+ * COLLAPSIBLE
+ * A section with a title and a chevron that toggles to show or hide the content below.
+ * Tap the title row to expand/collapse. Uses IconSymbol for the chevron (rotates 90deg when open).
+ */
+
 import { PropsWithChildren, useState } from 'react';
 import { StyleSheet, TouchableOpacity } from 'react-native';
 

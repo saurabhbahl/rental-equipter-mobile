@@ -1,3 +1,8 @@
+/**
+ * USE TOAST
+ * Provides a simple "toast" that shows an alert dialog (title + optional description).
+ * Currently implemented with Alert.alert(); you could replace this with a real toast library later.
+ */
 import { useState, useCallback } from 'react';
 import { Alert } from 'react-native';
 

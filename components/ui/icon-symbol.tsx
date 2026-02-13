@@ -1,4 +1,8 @@
-// Fallback for using MaterialIcons on Android and web.
+/**
+ * ICON SYMBOL (Android / Web fallback)
+ * On Android and web we don't have SF Symbols, so we use Material Icons instead.
+ * MAPPING maps SF Symbol names to Material Icons names so the same component API works everywhere.
+ */
 
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { SymbolWeight, SymbolViewProps } from 'expo-symbols';

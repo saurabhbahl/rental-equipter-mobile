@@ -1,3 +1,9 @@
+/**
+ * EXTERNAL LINK
+ * A link that opens in a new tab on web, and on native (iOS/Android) opens in the in-app browser
+ * instead of leaving the app. Uses expo-router Link + expo-web-browser.
+ */
+
 import { Href, Link } from 'expo-router';
 import { openBrowserAsync, WebBrowserPresentationStyle } from 'expo-web-browser';
 import { type ComponentProps } from 'react';

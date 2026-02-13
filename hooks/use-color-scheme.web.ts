@@ -1,9 +1,11 @@
+/**
+ * USE COLOR SCHEME (web)
+ * On web, we need to wait until the app has "hydrated" (JavaScript has run) before reading the color scheme.
+ * Otherwise we might get a mismatch between server-rendered HTML and client. Returns 'light' until then.
+ */
 import { useEffect, useState } from 'react';
 import { useColorScheme as useRNColorScheme } from 'react-native';
 
-/**
- * To support static rendering, this value needs to be re-calculated on the client side for web
- */
 export function useColorScheme() {
   const [hasHydrated, setHasHydrated] = useState(false);
 

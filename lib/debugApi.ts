@@ -1,4 +1,8 @@
-// Debug utility to test API connectivity
+/**
+ * DEBUG API
+ * Utility to test that the app can reach the backend. Calls GET /models and logs success or failure.
+ * Helpful when debugging network issues, CORS, or wrong API_BASE. Not used in the main app flow.
+ */
 import axiosClient from "./utils";
 import { API_BASE } from "./useEnv";
 

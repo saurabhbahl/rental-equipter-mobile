@@ -1,3 +1,9 @@
+/**
+ * PHONE DIALER
+ * Displays a phone number formatted as (XXX) XXX-XXXX and, when tapped, opens the device's phone app to call it.
+ * formatUSPhone() is a helper to normalize US numbers (strip non-digits, handle leading 1) and format for display.
+ */
+
 import { Text, TouchableOpacity, StyleSheet, Linking } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 

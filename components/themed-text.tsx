@@ -1,3 +1,9 @@
+/**
+ * THEMED TEXT
+ * A Text component that automatically uses the correct color for light or dark theme.
+ * You can override with lightColor/darkColor. The "type" prop applies preset styles (title, subtitle, link, etc.).
+ */
+
 import { StyleSheet, Text, type TextProps } from 'react-native';
 
 import { useThemeColor } from '@/hooks/use-theme-color';

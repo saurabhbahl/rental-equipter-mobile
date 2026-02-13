@@ -1,3 +1,12 @@
+/**
+ * APP CONTEXT
+ * Global state for equipment "models" (list of rentable equipment from the API).
+ * - models: array of equipment with id, code, name, blurb, image URL, optional video URL.
+ * - isModelsLoading / modelError: loading and error state for the fetch.
+ * - fetchModels(): calls GET /models and stores the result; used by HeroImageCarousel and RentalRequestForm.
+ * Wrap the app in AppContextProvider (done in _layout.tsx) and use useAppContext() in any child.
+ */
+
 import { createContext, useContext, useState, ReactNode } from "react";
 import axiosClient from "@/lib/utils";
 

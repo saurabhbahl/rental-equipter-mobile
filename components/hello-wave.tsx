@@ -1,3 +1,9 @@
+/**
+ * HELLO WAVE
+ * A simple animated waving-hand emoji (👋). Used for a friendly greeting; animation runs a few times.
+ * Built with react-native-reanimated.
+ */
+
 import Animated from 'react-native-reanimated';
 
 export function HelloWave() {

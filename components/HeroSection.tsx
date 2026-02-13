@@ -1,14 +1,15 @@
+/**
+ * HERO SECTION
+ * The main content block on the home screen: heading, description, equipment carousel, and benefit bullets.
+ * Wraps everything in a ScrollView so it scrolls if the content is tall (e.g. on small screens).
+ */
+
 import React from "react";
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Linking } from "react-native";
-import { MaterialIcons, Ionicons } from "@expo/vector-icons";
+import { View, Text, StyleSheet, ScrollView, Dimensions } from "react-native";
+import { MaterialIcons } from "@expo/vector-icons";
 import HeroImageCarousel from "./HeroImageCarousel";
-import { EQUIPTER_BASE_URL } from "@/lib/useEnv";
 
-interface HeroSectionProps {  
-  onStartRental: () => void;
-}
-
-const HeroSection: React.FC<HeroSectionProps> = ({ onStartRental }) => {
+const HeroSection: React.FC = () => {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.inner}>
@@ -25,7 +26,7 @@ const HeroSection: React.FC<HeroSectionProps> = ({ onStartRental }) => {
             </Text>
           </View>
 
-          <View style={styles.carouselMobile}>
+          <View style={[styles.carouselMobile, { width: Dimensions.get("window").width, marginLeft: -16, marginRight: -16 }]}>
             <HeroImageCarousel />
           </View>
 
@@ -48,23 +49,6 @@ const HeroSection: React.FC<HeroSectionProps> = ({ onStartRental }) => {
                 Complete two to six more jobs a month
               </Text>
             </View>
-          </View>
-
-          <View style={styles.ctaContainer}>
-            <TouchableOpacity
-              style={styles.primaryButton}
-              onPress={onStartRental}
-            >
-              <Text style={styles.primaryButtonText}>Start Rental Request</Text>
-              <Ionicons name="arrow-forward" size={20} color="#fff" />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.secondaryButton}
-              onPress={() => Linking.openURL(EQUIPTER_BASE_URL)}
-            >
-              <Text style={styles.secondaryButtonText}>Learn More About Equipter</Text>
-            </TouchableOpacity>
           </View>
         </View>
       </View>
@@ -120,38 +104,6 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     color: "#1f2937",
     flex: 1,
-  },
-  ctaContainer: {
-    gap: 12,
-    marginTop: 8,
-  },
-  primaryButton: {
-    backgroundColor: "#FF6B35",
-    paddingVertical: 14,
-    paddingHorizontal: 24,
-    borderRadius: 8,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-  },
-  primaryButtonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  secondaryButton: {
-    borderWidth: 1,
-    borderColor: "#e5e7eb",
-    paddingVertical: 14,
-    paddingHorizontal: 24,
-    borderRadius: 8,
-    alignItems: "center",
-  },
-  secondaryButtonText: {
-    color: "#1f2937",
-    fontSize: 16,
-    fontWeight: "500",
   },
 });
 

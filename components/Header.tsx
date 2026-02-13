@@ -1,74 +1,48 @@
-import React, { useState } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, Image, Linking, ScrollView } from "react-native";
-import { useRouter } from "expo-router";
-import { MaterialIcons, Ionicons, Feather } from "@expo/vector-icons";
-import { EQUIPTER_BASE_URL, EQUIPTER_RENT_URL } from "@/lib/useEnv";
+/**
+ * HEADER
+ * Top bar with logo centered. Optionally shows a back button on the left (used on the rental screen).
+ * Uses safe area insets so content is below the status bar. Touch target is at least 44px for accessibility.
+ */
 
-const Header: React.FC = () => {
-  const [open, setOpen] = useState(false);
-  const router = useRouter();
+import React from "react";
+import { View, Text, TouchableOpacity, StyleSheet, Image } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-  const handlePhonePress = () => {
-    Linking.openURL("tel:717-661-3591");
-  };
+const MIN_TOUCH_TARGET = 44;
 
-  const handleFindLocations = () => {
-    Linking.openURL(EQUIPTER_RENT_URL);
-  };
+interface HeaderProps {
+  showBackButton?: boolean;
+  onBackPress?: () => void;
+}
 
-  const handleAboutEquipter = () => {
-    Linking.openURL(EQUIPTER_BASE_URL);
-  };
+const Header: React.FC<HeaderProps> = ({ showBackButton, onBackPress }) => {
+  const insets = useSafeAreaInsets();
 
   return (
-    <View style={styles.header}>
+    <View style={[styles.header, { paddingTop: insets.top }]}>
       <View style={styles.container}>
         <View style={styles.topBar}>
-          <Image 
-            source={require("@/assets/images/logo.png")} 
-            style={styles.logo}
-            resizeMode="contain"
-          />
-          
-          <TouchableOpacity
-            onPress={() => setOpen(!open)}
-            style={styles.menuButton}
-          >
-            {open ? (
-              <Ionicons name="close" size={24} color="#333" />
-            ) : (
-              <Ionicons name="menu" size={24} color="#333" />
-            )}
-          </TouchableOpacity>
-        </View>
-
-        {open && (
-          <View style={styles.mobileMenu}>
+          {showBackButton && onBackPress ? (
             <TouchableOpacity
-              style={styles.menuItem}
-              onPress={handlePhonePress}
+              onPress={onBackPress}
+              style={styles.backButton}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             >
-              <MaterialIcons name="phone" size={16} color="#fff" />
-              <Text style={styles.menuItemText}>717-661-3591</Text>
+              <Ionicons name="arrow-back" size={24} color="#333" />
             </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.menuItem, styles.menuItemOutline]}
-              onPress={handleFindLocations}
-            >
-              <MaterialIcons name="place" size={16} color="#FF6B35" />
-              <Text style={styles.menuItemTextOutline}>Find Locations</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.menuItemLink}
-              onPress={handleAboutEquipter}
-            >
-              <Feather name="external-link" size={16} color="#FF6B35" />
-              <Text style={styles.menuItemTextLink}>About Equipter</Text>
-            </TouchableOpacity>
+          ) : (
+            <View style={styles.backPlaceholder} />
+          )}
+          <View style={styles.logoCenter}>
+            <Image
+              source={require("@/assets/images/logo.png")}
+              style={styles.logo}
+              resizeMode="contain"
+            />
           </View>
-        )}
+          <View style={styles.menuPlaceholder} />
+        </View>
       </View>
     </View>
   );
@@ -89,51 +63,30 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
+  backButton: {
+    width: MIN_TOUCH_TARGET,
+    height: MIN_TOUCH_TARGET,
+    justifyContent: "center",
+    alignItems: "center",
+    marginLeft: -4,
+  },
+  backPlaceholder: {
+    width: MIN_TOUCH_TARGET,
+    height: MIN_TOUCH_TARGET,
+  },
+  logoCenter: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   logo: {
     height: 40,
     width: 120,
   },
-  menuButton: {
-    padding: 8,
-  },
-  mobileMenu: {
-    marginTop: 12,
-    gap: 8,
-  },
-  menuItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: "#FF6B35",
-    padding: 12,
-    borderRadius: 8,
-  },
-  menuItemOutline: {
-    backgroundColor: "transparent",
-    borderWidth: 1,
-    borderColor: "#FF6B35",
-  },
-  menuItemLink: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    padding: 12,
-  },
-  menuItemText: {
-    color: "#fff",
-    fontWeight: "600",
-    fontSize: 14,
-  },
-  menuItemTextOutline: {
-    color: "#FF6B35",
-    fontWeight: "600",
-    fontSize: 14,
-  },
-  menuItemTextLink: {
-    color: "#FF6B35",
-    fontSize: 14,
+  menuPlaceholder: {
+    width: MIN_TOUCH_TARGET,
+    height: MIN_TOUCH_TARGET,
   },
 });
 
 export default Header;
-

@@ -1,32 +1,41 @@
-import React, { useEffect, useState } from "react";
-import { 
-  View, 
-  Text, 
-  TextInput, 
-  TouchableOpacity, 
-  StyleSheet, 
-  ScrollView, 
-  Image,
-  Alert,
-  Platform,
-  Linking,
-} from "react-native";
-import { AxiosResponse } from "axios";
-import DateTimePicker from '@react-native-community/datetimepicker';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { format } from "date-fns";
-import { 
-  MaterialIcons,
-  Feather,
-  Ionicons,
-} from "@expo/vector-icons";
-import axiosClient from "@/lib/utils";
-import { useToast } from "@/hooks/use-toast";
+/**
+ * RENTAL REQUEST FORM (multi-step)
+ * Step 1: ZIP code. Step 2: Choose equipment (from API models). Step 3: Start/end dates.
+ * Step 4: Project details (type, company, name). Step 5: Contact (name, email, phone, comments) and Submit.
+ * After submit: success step with "Go to Home" and optional "Find a location" link.
+ * - Lead ID is saved in AsyncStorage so we can update the same lead as the user moves through steps.
+ * - Errors are shown inline (no alert popups). Step 5 submit triggers parent to show full-screen "Submitting..." overlay.
+ */
 import { useAppContext } from "@/context/AppContext";
-import { PhoneDialer } from "./PhoneDialer";
-import { Loader } from "./Loader";
 import { EQUIPTER_RENT_URL } from "@/lib/useEnv";
+import axiosClient from "@/lib/utils";
+import { Ionicons, MaterialIcons } from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import DateTimePicker, {
+  DateTimePickerAndroid,
+} from "@react-native-community/datetimepicker";
+import { AxiosResponse } from "axios";
+import { format } from "date-fns";
+import { useRouter } from "expo-router";
+import * as WebBrowser from "expo-web-browser";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  Image,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { PhoneDialer } from "./PhoneDialer";
 
+// --- Date helpers (used for rental start/end dates) ---
 const today = new Date();
 today.setHours(0, 0, 0, 0);
 
@@ -36,6 +45,30 @@ function addDays(date: Date, days: number) {
   return d;
 }
 
+function toDate(d: Date | string | undefined, fallback: Date): Date {
+  if (d == null) return fallback;
+  const parsed = d instanceof Date ? d : new Date(d as string);
+  return isNaN(parsed.getTime()) ? fallback : parsed;
+}
+
+function formatDateForDisplay(
+  d: Date | string | undefined,
+  fallback: string,
+): string {
+  if (d == null) return fallback;
+  const date = toDate(d, new Date());
+  if (isNaN(date.getTime())) return fallback;
+  try {
+    const formatted = format(date, "PPP");
+    return formatted && String(formatted).trim()
+      ? formatted
+      : date.toLocaleDateString();
+  } catch {
+    return date.toLocaleDateString();
+  }
+}
+
+// Project type options shown in step 4
 const PROJECT_TYPES = [
   "Roofing",
   "Landscaping",
@@ -47,9 +80,22 @@ const PROJECT_TYPES = [
 ];
 
 const totalSteps = 5;
-export const LOCAL_LEAD_KEY = "formID";
+export const LOCAL_LEAD_KEY = "formID"; // AsyncStorage key for current lead ID
 const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
 
+/**
+ * Open URL: on Android use Custom Tab in same task (createTask: false) so returning to the app doesn't freeze.
+ * Requires app.json plugin "expo-web-browser" with experimentalLauncherActivity: true (native rebuild).
+ */
+function openUrl(url: string) {
+  if (Platform.OS === "android") {
+    WebBrowser.openBrowserAsync(url, { createTask: false });
+  } else {
+    WebBrowser.openBrowserAsync(url);
+  }
+}
+
+/** Shape of form data; maps to API lead fields (e.g. zip__c, email__c) */
 interface FormData {
   zipCode: string;
   equipment: string;
@@ -66,7 +112,19 @@ interface FormData {
   comments: string;
 }
 
-const RentalRequestForm: React.FC = () => {
+interface RentalRequestFormProps {
+  onBackToHome?: () => void;
+  /** Called with true when final submit (step 5) starts, false when it ends. Used to show full-screen "Submitting..." on rental page. */
+  onSubmittingChange?: (submitting: boolean) => void;
+}
+
+const RentalRequestForm: React.FC<RentalRequestFormProps> = ({
+  onSubmittingChange,
+}) => {
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+
+  // --- Form state ---
   const [equipmentOptions, setEquipmentOptions] = useState<any[]>([]);
   const [formData, setFormData] = useState<FormData>({
     zipCode: "",
@@ -74,7 +132,7 @@ const RentalRequestForm: React.FC = () => {
     equipment: "",
     startDate: undefined,
     endDate: undefined,
-    customerType: "company_contractor",
+    customerType: undefined,
     companyName: "",
     projectType: "",
     firstName: "",
@@ -83,6 +141,7 @@ const RentalRequestForm: React.FC = () => {
     phone: "",
     comments: "",
   });
+  /** Filled after step 5 submit; shown on success step (6) */
   const [locationDetails, setLocationDetails] = useState<{
     [k: string]: string | null;
   }>({
@@ -96,15 +155,20 @@ const RentalRequestForm: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { models, fetchModels } = useAppContext();
   const [currentStep, setCurrentStep] = useState(1);
-  const { toast } = useToast();
+  /** Inline errors per field (no alert popups); cleared when user edits the field or changes step */
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  /** API-level error message (e.g. "Too many requests"); shown in a banner above the form */
+  const [apiError, setApiError] = useState<string | null>(null);
   const [showStartDatePicker, setShowStartDatePicker] = useState(false);
   const [showEndDatePicker, setShowEndDatePicker] = useState(false);
   const [showProjectTypePicker, setShowProjectTypePicker] = useState(false);
+  /** Used only on step 5: keyboard height so we can set marginBottom and avoid gap above keyboard */
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const scrollViewRef = useRef<ScrollView>(null);
 
-  const progressPercentage = (currentStep / totalSteps) * 100;
-
+  /** Build API payload from formData; overrides (e.g. step__c) merged in */
   const buildPayload = (
-    overrides: Record<string, string | number | boolean | Date | null> = {}
+    overrides: Record<string, string | number | boolean | Date | null> = {},
   ) => {
     return {
       zip__c: formData.zipCode || null,
@@ -132,14 +196,20 @@ const RentalRequestForm: React.FC = () => {
     };
   };
 
+  /**
+   * Create a new lead (POST) or update existing (PUT) and advance to next step on success.
+   * Only step 5 triggers onSubmittingChange so the rental page shows "Submitting..." full-screen.
+   */
   async function createOrUpdateLead(stepNumber?: number) {
+    const isFinalSubmit = currentStep === 5;
     setIsSubmitting(true);
+    if (isFinalSubmit) onSubmittingChange?.(true);
     try {
       const id = await AsyncStorage.getItem(LOCAL_LEAD_KEY);
       let payload: Record<string, string | number | boolean | Date | null>;
       let url: string;
       let result: AxiosResponse;
-      
+
       if (id != null && id != undefined && id !== "") {
         payload = buildPayload({ step__c: stepNumber || currentStep });
         url = `/lead/${id}`;
@@ -151,7 +221,7 @@ const RentalRequestForm: React.FC = () => {
         const leadID = result.data?.data.id;
         await AsyncStorage.setItem(LOCAL_LEAD_KEY, String(leadID));
       }
-      
+
       if (result.status == 200 || result.status == 201) {
         setCurrentStep((prev) => (prev += 1));
       }
@@ -168,47 +238,56 @@ const RentalRequestForm: React.FC = () => {
         });
       }
     } catch (err: any) {
-      if (err?.response?.status === 400 && err.response.data.message == "Invalid zip code") {
-        toast({
-          title: `Enter the valid Zip code`,
-          description: "The Postal Code should be valid",
-          variant: "destructive",
-        });
+      setApiError(null);
+      setFieldErrors((prev) => ({}));
+      // Invalid ZIP: show inline error on zip field
+      if (
+        err?.response?.status === 400 &&
+        err.response.data.message == "Invalid zip code"
+      ) {
+        setFieldErrors((prev) => ({
+          ...prev,
+          zipCode:
+            "Please enter a valid ZIP code. The postal code should be valid.",
+        }));
         return;
       }
       if (err?.response?.status === 429) {
-        toast({
-          title: `Too many requests`,
-          description: "Please Try Again in 15 minutes",
-          variant: "destructive",
-        });
+        setApiError("Too many requests. Please try again in 15 minutes.");
         return;
       }
-      if (err?.response?.status === 404 || err.response.data.message == "Failed to update lead") {
+      // 404 or update failed: retry by creating a new lead and advance step
+      if (
+        err?.response?.status === 404 ||
+        err.response.data.message == "Failed to update lead"
+      ) {
         if (formData.zipCode == null) {
           setCurrentStep(1);
           return;
         }
         await AsyncStorage.removeItem(LOCAL_LEAD_KEY);
         const createUrl = `/lead`;
-        const createPayload = buildPayload({ step__c: stepNumber || currentStep });
-        const createResult = await axiosClient.post(createUrl, createPayload, { timeout: 10000 });
+        const createPayload = buildPayload({
+          step__c: stepNumber || currentStep,
+        });
+        const createResult = await axiosClient.post(createUrl, createPayload, {
+          timeout: 10000,
+        });
         const leadID = createResult.data?.data.id;
         await AsyncStorage.setItem(LOCAL_LEAD_KEY, String(leadID));
         setCurrentStep((prev) => Math.min(prev + 1, totalSteps));
         return;
       }
-      toast({
-        title: `Failed to Submit,Please Try Again Later`,
-        description: "There is some issue while submitting your request!",
-        variant: "destructive",
-      });
+      setApiError("Failed to submit. Please try again later.");
     } finally {
       setIsSubmitting(false);
+      onSubmittingChange?.(false);
     }
   }
 
+  /** Validate current step, then create/update lead and go to next step (or show success on step 5). */
   const handleNext = async () => {
+    closeDatePickers();
     if (!(await validateCurrentStep())) return;
     if (currentStep === 1) {
       await createOrUpdateLead();
@@ -233,112 +312,155 @@ const RentalRequestForm: React.FC = () => {
   };
 
   const handlePrevious = () => {
+    closeDatePickers();
     setCurrentStep((prev) => Math.max(prev - 1, 1));
   };
 
+  /** Run validation for the current step; set fieldErrors and return false if invalid, else true. */
   const validateCurrentStep = async (): Promise<boolean> => {
+    setApiError(null);
     switch (currentStep) {
-      case 1:
+      case 1: {
         if (!formData.zipCode || formData.zipCode?.length < 5) {
-          toast({
-            title: "Please enter a valid ZIP code",
-            description: "We need your location to find nearby rental options.",
-            variant: "destructive",
-          });
+          setFieldErrors((prev) => ({
+            ...prev,
+            zipCode:
+              "Please enter a valid ZIP code (we need your location to find nearby rentals).",
+          }));
           return false;
         }
+        setFieldErrors((prev) => ({ ...prev, zipCode: "" }));
         return true;
-      case 2:
+      }
+      case 2: {
         if (!formData.equipment) {
-          toast({
-            title: "Please select equipment",
-            description: "Choose the Equipter model you'd like to rent.",
-            variant: "destructive",
-          });
+          setFieldErrors((prev) => ({
+            ...prev,
+            equipment: "Please select the Equipter model you'd like to rent.",
+          }));
           return false;
         }
+        setFieldErrors((prev) => ({ ...prev, equipment: "" }));
         return true;
-      case 3:
+      }
+      case 3: {
         if (!formData.startDate) {
-          toast({
-            title: "Please select a start date",
-            description: "When do you need the equipment?",
-            variant: "destructive",
-          });
+          setFieldErrors((prev) => ({
+            ...prev,
+            startDate: "Please select a start date for your rental.",
+          }));
           return false;
         }
+        setFieldErrors((prev) => ({ ...prev, startDate: "" }));
         return true;
-      case 4:
-        if (!formData.firstName.trim()) {
-          toast({
-            title: "Please enter your First Name",
-            description: "We need to know who to contact about your rental.",
-            variant: "destructive",
-          });
-          return false;
-        }
-        if (!formData.lastName.trim()) {
-          toast({
-            title: "Please enter your Last Name",
-            description: "We need to know who to contact about your rental.",
-            variant: "destructive",
-          });
-          return false;
-        }
+      }
+      case 4: {
+        const errs: Record<string, string> = {};
+        if (!formData.firstName.trim())
+          errs.firstName = "Please enter your first name.";
+        if (!formData.lastName.trim())
+          errs.lastName = "Please enter your last name.";
         if (
           formData.customerType === "company_contractor" &&
           !formData.companyName.trim()
         ) {
-          toast({
-            title: "Please enter your company name",
-            description:
-              "Company information is required for business rentals.",
-            variant: "destructive",
-          });
+          errs.companyName = "Company name is required for business rentals.";
+        }
+        if (Object.keys(errs).length > 0) {
+          setFieldErrors((prev) => ({ ...prev, ...errs }));
           return false;
         }
+        setFieldErrors((prev) => ({
+          ...prev,
+          firstName: "",
+          lastName: "",
+          companyName: "",
+        }));
         return true;
-      case 5:
-        if (!formData.email) {
-          toast({
-            title: "Please provide  contact email",
-            description:
-              "We need your email and phone to assist with your rental.",
-            variant: "destructive",
-          });
-          return false;
-        }
-        if (!emailRegex.test(formData.email)) {
-          toast({
-            title: "Please provide valid email address",
-            description: "The email format is invalid.",
-            variant: "destructive",
-          });
-          return false;
-        }
+      }
+      case 5: {
+        const errs5: Record<string, string> = {};
+        if (!formData.email) errs5.email = "Please provide your contact email.";
+        else if (!emailRegex.test(formData.email))
+          errs5.email = "Please enter a valid email address.";
         if (!formData.phone || formData.phone?.length < 10) {
-          toast({
-            title:
-              formData.phone?.length < 10
-                ? `Please provide valid contact phone`
-                : `Please provide  contact phone`,
-            description:
-              "We need your email and phone to assist with your rental.",
-            variant: "destructive",
-          });
+          errs5.phone =
+            formData.phone?.length && formData.phone.length < 10
+              ? "Please enter a valid 10-digit phone number."
+              : "Please provide your contact phone number.";
+        }
+        if (Object.keys(errs5).length > 0) {
+          setFieldErrors((prev) => ({ ...prev, ...errs5 }));
           return false;
         }
+        setFieldErrors((prev) => ({ ...prev, email: "", phone: "" }));
         return true;
+      }
       default:
         return true;
     }
   };
 
+  /** Update one form field and clear that field's error so inline message disappears on edit */
   const updateFormData = (
     field: keyof FormData,
-    value: string | number | Date | undefined
+    value: string | number | Date | undefined,
   ) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
+    setFieldErrors((prev) => {
+      const next = { ...prev };
+      if (next[field]) delete next[field];
+      return next;
+    });
+  };
+
+  /** Open start date: Android uses native picker; iOS shows our inline spinner (below buttons) */
+  const openStartDatePicker = () => {
+    if (Platform.OS === "android") {
+      DateTimePickerAndroid.open({
+        value: toDate(formData.startDate, today),
+        mode: "date",
+        minimumDate: today,
+        maximumDate: formData.endDate
+          ? addDays(toDate(formData.endDate, today), -1)
+          : undefined,
+        onChange: (event, selectedDate) => {
+          if (event.type === "set" && selectedDate) {
+            updateFormData("startDate", new Date(selectedDate.getTime()));
+          }
+        },
+      });
+    } else {
+      setShowEndDatePicker(false);
+      setShowStartDatePicker(true);
+    }
+  };
+
+  /** Open end date; ensure only one of start/end picker is open at a time */
+  const openEndDatePicker = () => {
+    if (Platform.OS === "android") {
+      DateTimePickerAndroid.open({
+        value: formData.endDate
+          ? toDate(formData.endDate, today)
+          : addDays(toDate(formData.startDate, today), 1),
+        mode: "date",
+        minimumDate: toDate(formData.startDate, today),
+        onChange: (event, selectedDate) => {
+          if (event.type === "set" && selectedDate) {
+            updateFormData("endDate", new Date(selectedDate.getTime()));
+          }
+        },
+      });
+    } else {
+      setShowStartDatePicker(false);
+      setShowEndDatePicker(true);
+    }
+  };
+
+  /** Close both date pickers (e.g. when user taps Next/Previous) */
+  const closeDatePickers = () => {
+    setShowStartDatePicker(false);
+    setShowEndDatePicker(false);
   };
 
   useEffect(() => {
@@ -354,6 +476,7 @@ const RentalRequestForm: React.FC = () => {
     initializeForm();
   }, []);
 
+  /** Build equipment list for step 2 from API models + "Not sure" option */
   useEffect(() => {
     if (models?.length > 0) {
       const newEquipmentOptions = models?.map((m) => ({
@@ -375,12 +498,34 @@ const RentalRequestForm: React.FC = () => {
     }
   }, [models]);
 
+  /** On success (step 6), clear stored lead ID so next rental starts fresh */
   useEffect(() => {
     if (currentStep == 6) {
       AsyncStorage.removeItem(LOCAL_LEAD_KEY);
     }
   }, [currentStep]);
 
+  /** Clear all errors when moving to a new step */
+  useEffect(() => {
+    setFieldErrors((prev) => ({}));
+    setApiError(null);
+  }, [currentStep]);
+
+  /** Track keyboard height for step 5: we use marginBottom so form sits just above keyboard with no gap */
+  useEffect(() => {
+    const subShow = Keyboard.addListener("keyboardDidShow", (e) =>
+      setKeyboardHeight(e.endCoordinates.height),
+    );
+    const subHide = Keyboard.addListener("keyboardDidHide", () =>
+      setKeyboardHeight(0),
+    );
+    return () => {
+      subShow.remove();
+      subHide.remove();
+    };
+  }, []);
+
+  /** Render the current step's form content (ZIP, equipment, dates, details, contact, or success). */
   const renderStepContent = () => {
     switch (currentStep) {
       case 1:
@@ -388,7 +533,9 @@ const RentalRequestForm: React.FC = () => {
           <View style={styles.stepContent}>
             <View style={styles.stepHeader}>
               <MaterialIcons name="place" size={48} color="#FF6B35" />
-              <Text style={styles.stepTitle}>Where do you need the equipment?</Text>
+              <Text style={styles.stepTitle}>
+                Where do you need the equipment?
+              </Text>
               <Text style={styles.stepDescription}>
                 Enter your ZIP code to find nearby Equipter rental locations
               </Text>
@@ -396,16 +543,19 @@ const RentalRequestForm: React.FC = () => {
             <View style={styles.inputContainer}>
               <Text style={styles.label}>ZIP Code *</Text>
               <TextInput
-                style={styles.input}
+                style={[styles.input, fieldErrors.zipCode && styles.inputError]}
                 placeholder="Enter your ZIP code"
                 value={formData.zipCode}
                 onChangeText={(text) => {
                   const digits = text.replace(/\D/g, "").slice(0, 10);
                   updateFormData("zipCode", digits);
                 }}
-                keyboardType="numeric"
+                keyboardType="number-pad"
                 maxLength={10}
               />
+              {fieldErrors.zipCode ? (
+                <Text style={styles.errorText}>{fieldErrors.zipCode}</Text>
+              ) : null}
             </View>
           </View>
         );
@@ -415,40 +565,66 @@ const RentalRequestForm: React.FC = () => {
           <View style={styles.stepContent}>
             <View style={styles.stepHeader}>
               <MaterialIcons name="build" size={48} color="#FF6B35" />
-              <Text style={styles.stepTitle}>What Equipter equipment do you need?</Text>
+              <Text style={styles.stepTitle}>
+                What Equipter equipment do you need?
+              </Text>
               <Text style={styles.stepDescription}>
                 Select the model that best fits your project requirements
               </Text>
             </View>
-            <ScrollView style={styles.equipmentList}>
+            <View
+              style={[
+                styles.equipmentList,
+                fieldErrors.equipment && styles.equipmentListError,
+              ]}
+            >
               {equipmentOptions.map((option) => (
-                <TouchableOpacity
+                <View
                   key={option.value}
                   style={[
                     styles.equipmentCard,
-                    formData.equipment === option.value && styles.equipmentCardSelected,
+                    formData.equipment === option.value &&
+                      styles.equipmentCardSelected,
                   ]}
-                  onPress={() => updateFormData("equipment", option.value)}
                 >
-                  <View style={styles.equipmentCardContent}>
-                    <View
-                      style={[
-                        styles.radio,
-                        formData.equipment === option.value && styles.radioSelected,
-                      ]}
-                    />
+                  <TouchableOpacity
+                    style={styles.equipmentCardTouchable}
+                    onPress={() => updateFormData("equipment", option.value)}
+                    activeOpacity={0.7}
+                  >
                     <Image
-                      source={typeof option.thumbnail === 'string' ? { uri: option.thumbnail } : option.thumbnail}
+                      source={
+                        typeof option.thumbnail === "string"
+                          ? { uri: option.thumbnail }
+                          : option.thumbnail
+                      }
                       style={styles.equipmentThumbnail}
                     />
                     <View style={styles.equipmentInfo}>
                       <Text style={styles.equipmentLabel}>{option.label}</Text>
-                      <Text style={styles.equipmentDescription}>{option.description}</Text>
+                      <Text style={styles.equipmentDescription}>
+                        {option.description}
+                      </Text>
                     </View>
-                  </View>
-                </TouchableOpacity>
+                  </TouchableOpacity>
+                  {option.video ? (
+                    <TouchableOpacity
+                      style={styles.watchVideoButton}
+                      onPress={() => openUrl(option.video)}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="play-circle" size={20} color="#fff" />
+                      <Text style={styles.watchVideoButtonText}>
+                        Watch Video
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
               ))}
-            </ScrollView>
+            </View>
+            {fieldErrors.equipment ? (
+              <Text style={styles.errorText}>{fieldErrors.equipment}</Text>
+            ) : null}
           </View>
         );
 
@@ -466,64 +642,40 @@ const RentalRequestForm: React.FC = () => {
               <View style={styles.dateInputContainer}>
                 <Text style={styles.label}>Start Date *</Text>
                 <TouchableOpacity
-                  style={styles.dateButton}
-                  onPress={() => setShowStartDatePicker(true)}
+                  style={[
+                    styles.dateButton,
+                    fieldErrors.startDate && styles.dateButtonError,
+                  ]}
+                  onPress={openStartDatePicker}
                 >
-                  <Text style={styles.dateButtonText}>
-                    {formData.startDate
-                      ? format(formData.startDate, "PPP")
-                      : "Pick a start date"}
+                  <Text style={styles.dateButtonText} numberOfLines={1}>
+                    {formatDateForDisplay(
+                      formData.startDate,
+                      "Pick a start date",
+                    )}
                   </Text>
                 </TouchableOpacity>
-                {showStartDatePicker && (
-                  <DateTimePicker
-                    value={formData.startDate || new Date()}
-                    mode="date"
-                    display="default"
-                    minimumDate={today}
-                    maximumDate={formData.endDate ? addDays(formData.endDate, -1) : undefined}
-                    onChange={(event, selectedDate) => {
-                      setShowStartDatePicker(Platform.OS === 'ios');
-                      if (selectedDate) {
-                        updateFormData("startDate", selectedDate);
-                      }
-                    }}
-                  />
-                )}
+                {fieldErrors.startDate ? (
+                  <Text style={styles.errorText}>{fieldErrors.startDate}</Text>
+                ) : null}
               </View>
               <View style={styles.dateInputContainer}>
                 <Text style={styles.label}>End Date (Optional)</Text>
                 <TouchableOpacity
                   style={styles.dateButton}
-                  onPress={() => setShowEndDatePicker(true)}
+                  onPress={openEndDatePicker}
                 >
-                  <Text style={styles.dateButtonText}>
-                    {formData.endDate
-                      ? format(formData.endDate, "PPP")
-                      : "Pick end date"}
+                  <Text style={styles.dateButtonText} numberOfLines={1}>
+                    {formatDateForDisplay(formData.endDate, "Pick end date")}
                   </Text>
                 </TouchableOpacity>
-                {showEndDatePicker && (
-                  <DateTimePicker
-                    value={formData.endDate || addDays(formData.startDate || today, 1)}
-                    mode="date"
-                    display="default"
-                    minimumDate={formData.startDate || today}
-                    onChange={(event, selectedDate) => {
-                      setShowEndDatePicker(Platform.OS === 'ios');
-                      if (selectedDate) {
-                        updateFormData("endDate", selectedDate);
-                      }
-                    }}
-                  />
-                )}
               </View>
             </View>
             <View style={styles.infoBox}>
               <Text style={styles.infoText}>
-                <Text style={styles.infoBold}>Typical rental rates:</Text> $200-$300 per day or
-                $800-$1,200 per week. Final pricing will be provided by your
-                local rental partner.
+                <Text style={styles.infoBold}>Typical rental rates:</Text>{" "}
+                $200-$300 per day or $800-$1,200 per week. Final pricing will be
+                provided by your local rental partner.
               </Text>
             </View>
           </View>
@@ -540,80 +692,157 @@ const RentalRequestForm: React.FC = () => {
               </Text>
             </View>
             <View style={styles.formFields}>
-              <Text style={styles.label}>Are you renting as a... *</Text>
-              <View style={styles.radioGroup}>
+              <Text style={styles.rentingAsHeading}>Are you renting as?</Text>
+              <View style={styles.customerTypeOptions}>
                 <TouchableOpacity
-                  style={styles.radioOption}
-                  onPress={() => updateFormData("customerType", "company_contractor")}
+                  style={[
+                    styles.customerTypeCard,
+                    formData.customerType === "company_contractor" &&
+                      styles.customerTypeCardSelected,
+                  ]}
+                  onPress={() =>
+                    updateFormData("customerType", "company_contractor")
+                  }
+                  activeOpacity={0.7}
                 >
-                  <View style={[styles.radioCircle, formData.customerType === "company_contractor" && styles.radioCircleSelected]} />
-                  <Text>Company/Contractor</Text>
+                  <Text
+                    style={[
+                      styles.customerTypeCardText,
+                      formData.customerType === "company_contractor" &&
+                        styles.customerTypeCardTextSelected,
+                    ]}
+                  >
+                    Company / Contractor
+                  </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={styles.radioOption}
-                  onPress={() => updateFormData("customerType", "individual_homeowner")}
+                  style={[
+                    styles.customerTypeCard,
+                    formData.customerType === "individual_homeowner" &&
+                      styles.customerTypeCardSelected,
+                  ]}
+                  onPress={() =>
+                    updateFormData("customerType", "individual_homeowner")
+                  }
+                  activeOpacity={0.7}
                 >
-                  <View style={[styles.radioCircle, formData.customerType === "individual_homeowner" && styles.radioCircleSelected]} />
-                  <Text>Individual/Homeowner</Text>
+                  <Text
+                    style={[
+                      styles.customerTypeCardText,
+                      formData.customerType === "individual_homeowner" &&
+                        styles.customerTypeCardTextSelected,
+                    ]}
+                  >
+                    Individual / Homeowner
+                  </Text>
                 </TouchableOpacity>
               </View>
 
-              <View style={styles.inputContainer}>
-                <Text style={styles.label}>First Name *</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Enter your First Name"
-                  value={formData.firstName}
-                  onChangeText={(text) => updateFormData("firstName", text)}
-                />
-              </View>
-              <View style={styles.inputContainer}>
-                <Text style={styles.label}>Last Name *</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Enter your Last Name"
-                  value={formData.lastName}
-                  onChangeText={(text) => updateFormData("lastName", text)}
-                />
-              </View>
-              {formData.customerType === "company_contractor" && (
-                <View style={styles.inputContainer}>
-                  <Text style={styles.label}>Company Name *</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="Enter your company name"
-                    value={formData.companyName}
-                    onChangeText={(text) => updateFormData("companyName", text)}
-                  />
-                </View>
-              )}
-              <View style={styles.inputContainer}>
-                <Text style={styles.label}>Project Type</Text>
-                <TouchableOpacity
-                  style={styles.selectButton}
-                  onPress={() => setShowProjectTypePicker(true)}
-                >
-                  <Text style={styles.selectButtonText}>
-                    {formData.projectType || "Select project type (optional)"}
-                  </Text>
-                </TouchableOpacity>
-                {showProjectTypePicker && (
-                  <View style={styles.pickerContainer}>
-                    {PROJECT_TYPES.map((type) => (
-                      <TouchableOpacity
-                        key={type}
-                        style={styles.pickerOption}
-                        onPress={() => {
-                          updateFormData("projectType", type.toLowerCase().replace(" ", "-"));
-                          setShowProjectTypePicker(false);
-                        }}
-                      >
-                        <Text>{type}</Text>
-                      </TouchableOpacity>
-                    ))}
+              {formData.customerType && (
+                <>
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.label}>First Name *</Text>
+                    <TextInput
+                      style={[
+                        styles.input,
+                        fieldErrors.firstName && styles.inputError,
+                      ]}
+                      placeholder="Enter your First Name"
+                      value={formData.firstName}
+                      onChangeText={(text) => updateFormData("firstName", text)}
+                    />
+                    {fieldErrors.firstName ? (
+                      <Text style={styles.errorText}>
+                        {fieldErrors.firstName}
+                      </Text>
+                    ) : null}
                   </View>
-                )}
-              </View>
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.label}>Last Name *</Text>
+                    <TextInput
+                      style={[
+                        styles.input,
+                        fieldErrors.lastName && styles.inputError,
+                      ]}
+                      placeholder="Enter your Last Name"
+                      value={formData.lastName}
+                      onChangeText={(text) => updateFormData("lastName", text)}
+                    />
+                    {fieldErrors.lastName ? (
+                      <Text style={styles.errorText}>
+                        {fieldErrors.lastName}
+                      </Text>
+                    ) : null}
+                  </View>
+                  {formData.customerType === "company_contractor" && (
+                    <View style={styles.inputContainer}>
+                      <Text style={styles.label}>Company Name *</Text>
+                      <TextInput
+                        style={[
+                          styles.input,
+                          fieldErrors.companyName && styles.inputError,
+                        ]}
+                        placeholder="Enter your company name"
+                        value={formData.companyName}
+                        onChangeText={(text) =>
+                          updateFormData("companyName", text)
+                        }
+                      />
+                      {fieldErrors.companyName ? (
+                        <Text style={styles.errorText}>
+                          {fieldErrors.companyName}
+                        </Text>
+                      ) : null}
+                    </View>
+                  )}
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.label}>Project Type</Text>
+                    <TouchableOpacity
+                      style={styles.selectButton}
+                      onPress={() =>
+                        setShowProjectTypePicker(!showProjectTypePicker)
+                      }
+                    >
+                      <Text style={styles.selectButtonText} numberOfLines={1}>
+                        {formData.projectType
+                          ? PROJECT_TYPES.find(
+                              (p) =>
+                                p.toLowerCase().replace(/\s+/g, "-") ===
+                                formData.projectType,
+                            ) || formData.projectType
+                          : "Select project type (optional)"}
+                      </Text>
+                    </TouchableOpacity>
+                    {showProjectTypePicker && (
+                      <View style={styles.pickerContainer}>
+                        <ScrollView
+                          style={styles.pickerScroll}
+                          nestedScrollEnabled
+                          keyboardShouldPersistTaps="handled"
+                        >
+                          {PROJECT_TYPES.map((type) => (
+                            <TouchableOpacity
+                              key={type}
+                              style={styles.pickerOption}
+                              onPress={() => {
+                                updateFormData(
+                                  "projectType",
+                                  type.toLowerCase().replace(/\s+/g, "-"),
+                                );
+                                setShowProjectTypePicker(false);
+                              }}
+                            >
+                              <Text style={styles.pickerOptionText}>
+                                {type}
+                              </Text>
+                            </TouchableOpacity>
+                          ))}
+                        </ScrollView>
+                      </View>
+                    )}
+                  </View>
+                </>
+              )}
             </View>
           </View>
         );
@@ -633,18 +862,21 @@ const RentalRequestForm: React.FC = () => {
               <View style={styles.inputContainer}>
                 <Text style={styles.label}>Email Address *</Text>
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, fieldErrors.email && styles.inputError]}
                   placeholder="your.email@example.com"
                   value={formData.email}
                   onChangeText={(text) => updateFormData("email", text)}
                   keyboardType="email-address"
                   autoCapitalize="none"
                 />
+                {fieldErrors.email ? (
+                  <Text style={styles.errorText}>{fieldErrors.email}</Text>
+                ) : null}
               </View>
               <View style={styles.inputContainer}>
                 <Text style={styles.label}>Phone Number *</Text>
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, fieldErrors.phone && styles.inputError]}
                   placeholder="(555) 123-4567"
                   value={formData.phone}
                   onChangeText={(text) => {
@@ -656,6 +888,9 @@ const RentalRequestForm: React.FC = () => {
                   keyboardType="phone-pad"
                   maxLength={10}
                 />
+                {fieldErrors.phone ? (
+                  <Text style={styles.errorText}>{fieldErrors.phone}</Text>
+                ) : null}
               </View>
               <View style={styles.inputContainer}>
                 <Text style={styles.label}>Additional Comments</Text>
@@ -665,6 +900,16 @@ const RentalRequestForm: React.FC = () => {
                   value={formData.comments}
                   onChangeText={(text) => {
                     updateFormData("comments", text.slice(0, 255));
+                  }}
+                  onFocus={() => {
+                    // Scroll to bottom so this field stays visible above keyboard (step 5 uses marginBottom, not extra padding)
+                    setTimeout(
+                      () =>
+                        scrollViewRef.current?.scrollToEnd({
+                          animated: true,
+                        }),
+                      400,
+                    );
                   }}
                   multiline
                   numberOfLines={3}
@@ -680,10 +925,10 @@ const RentalRequestForm: React.FC = () => {
 
       case 6:
         return (
-          <View style={styles.stepContent}>
+          <View style={styles.stepContentSuccess}>
             <View style={styles.successContainer}>
               <View style={styles.successIcon}>
-                <MaterialIcons name="check-circle" size={48} color="#10b981" />
+                <MaterialIcons name="check-circle" size={56} color="#22c55e" />
               </View>
               <Text style={styles.successTitle}>Request Submitted!</Text>
               <Text style={styles.successDescription}>
@@ -695,8 +940,10 @@ const RentalRequestForm: React.FC = () => {
 
             <View style={styles.locationCard}>
               <View style={styles.locationCardHeader}>
-                <MaterialIcons name="place" size={20} color="#FF6B35" />
-                <Text style={styles.locationCardTitle}>Nearest Rental Location</Text>
+                <MaterialIcons name="place" size={22} color="#FF6B35" />
+                <Text style={styles.locationCardTitle}>
+                  Nearest Rental Location
+                </Text>
               </View>
               <View style={styles.locationCardContent}>
                 <Text style={styles.locationName}>{locationDetails?.name}</Text>
@@ -704,17 +951,22 @@ const RentalRequestForm: React.FC = () => {
                   <View style={styles.locationDetail}>
                     <MaterialIcons name="place" size={16} color="#FF6B35" />
                     <Text style={styles.locationText}>
-                      {locationDetails?.street} - {locationDetails?.state} - {locationDetails?.country} - {locationDetails?.zip}
+                      {locationDetails?.street} - {locationDetails?.state} -{" "}
+                      {locationDetails?.country} - {locationDetails?.zip}
                     </Text>
                   </View>
                 )}
                 <View style={styles.locationDetail}>
                   <MaterialIcons name="access-time" size={16} color="#FF6B35" />
                   <Text style={styles.locationText}>
-                    Approx {Number(locationDetails?.distance).toFixed(1)} {locationDetails?.distance == "1" ? "mile" : "miles"} from your location
+                    Approx {Number(locationDetails?.distance).toFixed(1)}{" "}
+                    {locationDetails?.distance == "1" ? "mile" : "miles"} from
+                    your location
                   </Text>
                 </View>
-                {locationDetails?.phone && <PhoneDialer phone={locationDetails?.phone} />}
+                {locationDetails?.phone && (
+                  <PhoneDialer phone={locationDetails?.phone} />
+                )}
               </View>
             </View>
 
@@ -722,10 +974,15 @@ const RentalRequestForm: React.FC = () => {
               <Text style={styles.nextStepsTitle}>What next?</Text>
               <View style={styles.nextStepItem}>
                 <View style={styles.nextStepIcon}>
-                  <MaterialIcons name="attach-money" size={20} color="#FF6B35" />
+                  <MaterialIcons
+                    name="attach-money"
+                    size={20}
+                    color="#FF6B35"
+                  />
                 </View>
                 <Text style={styles.nextStepText}>
-                  Contact {locationDetails?.name} to confirm availability and receive final pricing.
+                  Contact {locationDetails?.name} to confirm availability and
+                  receive final pricing.
                 </Text>
               </View>
               <View style={styles.nextStepItem}>
@@ -733,16 +990,28 @@ const RentalRequestForm: React.FC = () => {
                   <MaterialIcons name="phone" size={20} color="#FF6B35" />
                 </View>
                 <Text style={styles.nextStepText}>
-                  For any additional assistance, please feel free to contact an Equipter specialist at (717) 425-2683
+                  For any additional assistance, please feel free to contact an
+                  Equipter specialist at (717) 425-2683
                 </Text>
               </View>
             </View>
 
             <TouchableOpacity
               style={styles.viewAllButton}
-              onPress={() => Linking.openURL(EQUIPTER_RENT_URL)}
+              onPress={() => openUrl(EQUIPTER_RENT_URL)}
             >
-              <Text style={styles.viewAllButtonText}>View All Rental Locations</Text>
+              <Text style={styles.viewAllButtonText}>
+                View All Rental Locations
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.goToHomeButton}
+              onPress={() => router.replace("/")}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="home" size={22} color="#fff" />
+              <Text style={styles.goToHomeButtonText}>Main Screen</Text>
             </TouchableOpacity>
           </View>
         );
@@ -752,97 +1021,214 @@ const RentalRequestForm: React.FC = () => {
     }
   };
 
+  const bottomBarPadding = { paddingBottom: Math.max(insets.bottom, 16) };
+  const BOTTOM_BAR_HEIGHT = 100;
+  const scrollContentPaddingBottom =
+    BOTTOM_BAR_HEIGHT + Math.max(insets.bottom, 16);
+
+  /** Steps 2, 4, 5: content top-aligned and not stretched (scrollable list/form). Steps 1, 3: centered. */
+  const contentStyle = [
+    styles.content,
+    currentStep === 2 || currentStep === 4 || currentStep === 5
+      ? styles.contentTop
+      : styles.contentCentered,
+    (currentStep === 2 || currentStep === 4 || currentStep === 5) &&
+      styles.contentNoGrow,
+  ];
+
+  // --- Success step (6): scrollable page with no bottom bar; "Go to Home" in content ---
   if (currentStep === 6) {
     return (
-      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-        <View style={styles.card}>
-          <View style={styles.cardContent}>{renderStepContent()}</View>
-        </View>
-      </ScrollView>
+      <View style={styles.wrapper}>
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={[
+            styles.content,
+            styles.contentTop,
+            { paddingBottom: 32 },
+          ]}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          scrollEnabled={true}
+        >
+          <View style={styles.formArea}>
+            <View style={styles.cardContent}>{renderStepContent()}</View>
+          </View>
+        </ScrollView>
+      </View>
     );
   }
 
-  return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <View style={styles.card}>
-        <View style={styles.cardHeader}>
-          <View style={styles.progressBar}>
-            <View
-              style={[styles.progressFill, { width: `${progressPercentage}%` }]}
-            />
-          </View>
-          <Text style={styles.stepIndicator}>
-            Step {currentStep} of {totalSteps}
-          </Text>
+  /** Shared layout for steps 1–5: scrollable form + Previous/Next (or Submit) bar */
+  const scrollAndBottomBar = (
+    <>
+      <ScrollView
+        ref={scrollViewRef}
+        style={styles.scrollView}
+        contentContainerStyle={[
+          contentStyle,
+          { paddingBottom: scrollContentPaddingBottom },
+        ]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        scrollEnabled={
+          currentStep === 2 || currentStep === 4 || currentStep === 5
+        }
+      >
+        <View style={styles.formArea}>
+          {apiError ? (
+            <View style={styles.apiErrorBanner}>
+              <Text style={styles.apiErrorBannerText}>{apiError}</Text>
+            </View>
+          ) : null}
+          <View style={styles.cardContent}>{renderStepContent()}</View>
         </View>
-        <View style={styles.cardContent}>
-          {renderStepContent()}
-          <View style={styles.buttonContainer}>
-            <TouchableOpacity
-              style={[styles.button, styles.buttonOutline, currentStep === 1 && styles.buttonDisabled]}
-              onPress={handlePrevious}
-              disabled={currentStep === 1}
-            >
-              <Text style={styles.buttonOutlineText}>Previous</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.button, styles.buttonPrimary, isSubmitting && styles.buttonDisabled]}
-              onPress={handleNext}
-              disabled={isSubmitting}
-            >
-              {isSubmitting ? (
-                <Loader size="small" color="#fff" />
-              ) : (
-                <Text style={styles.buttonPrimaryText}>
-                  {currentStep === totalSteps ? "Submit Request" : "Next Step"}
-                </Text>
-              )}
-            </TouchableOpacity>
-          </View>
+      </ScrollView>
+      <View style={[styles.bottomBar, bottomBarPadding]}>
+        <View style={styles.bottomBarActions}>
+          <TouchableOpacity
+            style={[
+              styles.footerButton,
+              styles.footerButtonOutline,
+              currentStep === 1 && styles.buttonDisabled,
+            ]}
+            onPress={handlePrevious}
+            disabled={currentStep === 1}
+          >
+            <Text style={styles.footerButtonOutlineText}>Previous</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.footerButton,
+              styles.footerButtonPrimary,
+              isSubmitting && styles.buttonDisabled,
+            ]}
+            onPress={handleNext}
+            disabled={isSubmitting}
+          >
+            <Text style={styles.footerButtonPrimaryText}>
+              {currentStep === totalSteps ? "Submit Request" : "Next Step"}
+            </Text>
+          </TouchableOpacity>
         </View>
       </View>
-    </ScrollView>
+    </>
+  );
+
+  return (
+    <View style={styles.wrapper}>
+      {/* Step 5: no KeyboardAvoidingView; use marginBottom = keyboard height so form ends at keyboard (no gap). Other steps: use KeyboardAvoidingView. */}
+      {currentStep === 5 ? (
+        <View
+          style={[
+            styles.keyboardAvoid,
+            keyboardHeight > 0 && { marginBottom: 100 },
+          ]}
+        >
+          {scrollAndBottomBar}
+        </View>
+      ) : (
+        <KeyboardAvoidingView
+          style={styles.keyboardAvoid}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 100 : 0}
+        >
+          {scrollAndBottomBar}
+        </KeyboardAvoidingView>
+      )}
+
+      {/* iOS date pickers: shown below the buttons; tap backdrop to close. Date updates live as user scrolls. */}
+      {showStartDatePicker && Platform.OS === "ios" && (
+        <View style={styles.datePickerOverlay} pointerEvents="box-none">
+          <Pressable
+            style={styles.datePickerBackdrop}
+            onPress={() => setShowStartDatePicker(false)}
+          />
+          <View style={styles.datePickerVisible}>
+            <DateTimePicker
+              value={toDate(formData.startDate, today)}
+              mode="date"
+              display="spinner"
+              minimumDate={today}
+              maximumDate={
+                formData.endDate
+                  ? addDays(toDate(formData.endDate, today), -1)
+                  : undefined
+              }
+              themeVariant="light"
+              textColor="#111827"
+              accentColor="#FF6B35"
+              onChange={(event, selectedDate) => {
+                if (selectedDate) {
+                  updateFormData("startDate", new Date(selectedDate.getTime()));
+                }
+              }}
+            />
+          </View>
+        </View>
+      )}
+
+      {showEndDatePicker && Platform.OS === "ios" && (
+        <View style={styles.datePickerOverlay} pointerEvents="box-none">
+          <Pressable
+            style={styles.datePickerBackdrop}
+            onPress={() => setShowEndDatePicker(false)}
+          />
+          <View style={styles.datePickerVisible}>
+            <DateTimePicker
+              value={
+                formData.endDate
+                  ? toDate(formData.endDate, today)
+                  : addDays(toDate(formData.startDate, today), 1)
+              }
+              mode="date"
+              display="spinner"
+              minimumDate={toDate(formData.startDate, today)}
+              themeVariant="light"
+              textColor="#111827"
+              accentColor="#FF6B35"
+              onChange={(event, selectedDate) => {
+                if (selectedDate) {
+                  updateFormData("endDate", new Date(selectedDate.getTime()));
+                }
+              }}
+            />
+          </View>
+        </View>
+      )}
+    </View>
   );
 };
 
+// --- Layout and form styles (steps, inputs, buttons, date picker, success) ---
 const styles = StyleSheet.create({
-  container: {
+  wrapper: {
     flex: 1,
     backgroundColor: "#f9fafb",
   },
+  scrollView: {
+    flex: 1,
+  },
   content: {
     padding: 16,
+    paddingBottom: 24,
+    flexGrow: 1,
   },
-  card: {
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+  contentNoGrow: {
+    flexGrow: 0,
   },
-  cardHeader: {
-    padding: 16,
-    paddingBottom: 8,
+  contentCentered: {
+    justifyContent: "center",
   },
-  progressBar: {
+  contentTop: {
+    justifyContent: "flex-start",
+  },
+  keyboardAvoid: {
+    flex: 1,
+  },
+  formArea: {
     width: "100%",
-    height: 8,
-    backgroundColor: "#e5e7eb",
-    borderRadius: 4,
-    marginBottom: 8,
-    overflow: "hidden",
-  },
-  progressFill: {
-    height: "100%",
-    backgroundColor: "#FF6B35",
-    borderRadius: 4,
-  },
-  stepIndicator: {
-    fontSize: 12,
-    color: "#6b7280",
-    textAlign: "center",
   },
   cardContent: {
     padding: 16,
@@ -882,6 +1268,40 @@ const styles = StyleSheet.create({
     fontSize: 16,
     backgroundColor: "#fff",
   },
+  inputError: {
+    borderColor: "#dc2626",
+    borderWidth: 2,
+    backgroundColor: "#fef2f2",
+  },
+  errorText: {
+    fontSize: 13,
+    color: "#dc2626",
+    marginTop: 4,
+  },
+  apiErrorBanner: {
+    backgroundColor: "#fef2f2",
+    borderWidth: 1,
+    borderColor: "#fecaca",
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+  },
+  apiErrorBannerText: {
+    fontSize: 14,
+    color: "#dc2626",
+    fontWeight: "500",
+  },
+  dateButtonError: {
+    borderColor: "#dc2626",
+    borderWidth: 2,
+    backgroundColor: "#fef2f2",
+  },
+  equipmentListError: {
+    borderWidth: 2,
+    borderColor: "#dc2626",
+    borderRadius: 12,
+    padding: 2,
+  },
   textArea: {
     height: 80,
     textAlignVertical: "top",
@@ -892,54 +1312,75 @@ const styles = StyleSheet.create({
     textAlign: "right",
   },
   equipmentList: {
-    maxHeight: 400,
+    gap: 12,
   },
   equipmentCard: {
+    backgroundColor: "#fff",
+    borderRadius: 14,
+    padding: 14,
     borderWidth: 1,
     borderColor: "#e5e7eb",
-    borderRadius: 8,
-    marginBottom: 12,
     overflow: "hidden",
   },
   equipmentCardSelected: {
     borderColor: "#FF6B35",
     borderWidth: 2,
     backgroundColor: "#fff5f0",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#FF6B35",
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.2,
+        shadowRadius: 8,
+      },
+      android: { elevation: 6 },
+    }),
   },
-  equipmentCardContent: {
+  equipmentCardTouchable: {
     flexDirection: "row",
     alignItems: "center",
-    padding: 12,
-    gap: 12,
-  },
-  radio: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: "#9ca3af",
-  },
-  radioSelected: {
-    borderColor: "#FF6B35",
-    backgroundColor: "#FF6B35",
+    minHeight: 72,
   },
   equipmentThumbnail: {
-    width: 80,
-    height: 80,
-    borderRadius: 8,
+    width: 72,
+    height: 72,
+    borderRadius: 10,
+    backgroundColor: "#f3f4f6",
   },
   equipmentInfo: {
     flex: 1,
+    marginLeft: 14,
     gap: 4,
+    justifyContent: "center",
   },
   equipmentLabel: {
     fontSize: 16,
     fontWeight: "700",
     color: "#1f2937",
   },
+  watchVideoButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#0f172a",
+    marginTop: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255, 107, 53, 0.4)",
+  },
+  watchVideoButtonText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+  },
   equipmentDescription: {
     fontSize: 14,
     color: "#6b7280",
+    lineHeight: 20,
   },
   dateContainer: {
     gap: 16,
@@ -957,6 +1398,31 @@ const styles = StyleSheet.create({
   dateButtonText: {
     fontSize: 16,
     color: "#1f2937",
+    fontWeight: "500",
+  },
+  datePickerOverlay: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  datePickerBackdrop: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+  },
+  datePickerVisible: {
+    padding: 16,
+    backgroundColor: "#fff",
+    alignItems: "center",
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
   },
   infoBox: {
     backgroundColor: "#f3f4f6",
@@ -973,24 +1439,37 @@ const styles = StyleSheet.create({
   formFields: {
     gap: 16,
   },
-  radioGroup: {
-    gap: 12,
+  rentingAsHeading: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: "#1f2937",
+    marginBottom: 16,
+    textAlign: "center",
   },
-  radioOption: {
-    flexDirection: "row",
-    alignItems: "center",
+  customerTypeOptions: {
     gap: 12,
+    marginBottom: 8,
   },
-  radioCircle: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+  customerTypeCard: {
+    paddingVertical: 18,
+    paddingHorizontal: 20,
+    borderRadius: 12,
     borderWidth: 2,
-    borderColor: "#d1d5db",
+    borderColor: "#e5e7eb",
+    backgroundColor: "#fff",
+    alignItems: "center",
   },
-  radioCircleSelected: {
+  customerTypeCardSelected: {
     borderColor: "#FF6B35",
-    backgroundColor: "#FF6B35",
+    backgroundColor: "#fff5f0",
+  },
+  customerTypeCardText: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#4b5563",
+  },
+  customerTypeCardTextSelected: {
+    color: "#FF6B35",
   },
   selectButton: {
     borderWidth: 1,
@@ -1009,35 +1488,45 @@ const styles = StyleSheet.create({
     borderColor: "#d1d5db",
     borderRadius: 8,
     backgroundColor: "#fff",
-    maxHeight: 200,
+    maxHeight: 220,
+    overflow: "hidden",
+  },
+  pickerScroll: {
+    maxHeight: 220,
   },
   pickerOption: {
-    padding: 12,
+    padding: 14,
     borderBottomWidth: 1,
     borderBottomColor: "#e5e7eb",
   },
-  buttonContainer: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginTop: 24,
-    paddingTop: 24,
+  pickerOptionText: {
+    fontSize: 15,
+    color: "#1f2937",
+  },
+  bottomBar: {
+    backgroundColor: "#fff",
     borderTopWidth: 1,
     borderTopColor: "#e5e7eb",
+    paddingTop: 16,
+    paddingHorizontal: 16,
     gap: 12,
   },
-  button: {
+  bottomBarActions: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  footerButton: {
     flex: 1,
     paddingVertical: 14,
-    paddingHorizontal: 24,
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
-    minWidth: 120,
+    minHeight: 48,
   },
-  buttonPrimary: {
+  footerButtonPrimary: {
     backgroundColor: "#FF6B35",
   },
-  buttonOutline: {
+  footerButtonOutline: {
     borderWidth: 1,
     borderColor: "#d1d5db",
     backgroundColor: "#fff",
@@ -1045,70 +1534,106 @@ const styles = StyleSheet.create({
   buttonDisabled: {
     opacity: 0.5,
   },
-  buttonPrimaryText: {
+  footerButtonPrimaryText: {
     color: "#fff",
     fontSize: 16,
     fontWeight: "600",
   },
-  buttonOutlineText: {
+  footerButtonOutlineText: {
     color: "#1f2937",
     fontSize: 16,
     fontWeight: "500",
   },
+  stepContentSuccess: {
+    gap: 24,
+    paddingBottom: 24,
+  },
   successContainer: {
     alignItems: "center",
-    gap: 16,
-    marginBottom: 24,
+    gap: 18,
+    marginBottom: 8,
+    paddingVertical: 24,
+    paddingHorizontal: 16,
+    backgroundColor: "rgba(15, 23, 42, 0.04)",
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(34, 197, 94, 0.2)",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#22c55e",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.15,
+        shadowRadius: 12,
+      },
+      android: { elevation: 6 },
+    }),
   },
   successIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: "#d1fae5",
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: "rgba(34, 197, 94, 0.15)",
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "rgba(34, 197, 94, 0.4)",
   },
   successTitle: {
-    fontSize: 28,
-    fontWeight: "700",
-    color: "#10b981",
+    fontSize: 26,
+    fontWeight: "800",
+    color: "#16a34a",
+    letterSpacing: 0.5,
   },
   successDescription: {
-    fontSize: 14,
-    color: "#6b7280",
+    fontSize: 15,
+    color: "#475569",
     textAlign: "center",
     maxWidth: 400,
+    lineHeight: 22,
   },
   locationCard: {
-    borderWidth: 1,
-    borderColor: "#e5e7eb",
-    borderRadius: 12,
+    backgroundColor: "#fff",
+    borderRadius: 16,
     overflow: "hidden",
-    marginBottom: 24,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0f172a",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.08,
+        shadowRadius: 12,
+      },
+      android: { elevation: 4 },
+    }),
   },
   locationCardHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    padding: 16,
-    backgroundColor: "#fff5f0",
-    borderBottomWidth: 1,
-    borderBottomColor: "#e5e7eb",
+    gap: 10,
+    padding: 18,
+    backgroundColor: "#0f172a",
+    borderBottomWidth: 2,
+    borderBottomColor: "rgba(255, 107, 53, 0.3)",
   },
   locationCardTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#1f2937",
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#f8fafc",
+    letterSpacing: 0.3,
   },
   locationCardContent: {
-    padding: 16,
+    padding: 18,
     gap: 12,
+    backgroundColor: "#fff",
   },
   locationName: {
     fontSize: 18,
-    fontWeight: "600",
-    color: "#1f2937",
+    fontWeight: "700",
+    color: "#0f172a",
     marginBottom: 8,
+    letterSpacing: 0.2,
   },
   locationDetail: {
     flexDirection: "row",
@@ -1117,17 +1642,23 @@ const styles = StyleSheet.create({
   },
   locationText: {
     fontSize: 14,
-    color: "#6b7280",
+    color: "#475569",
   },
   nextSteps: {
     gap: 16,
-    marginBottom: 24,
+    marginBottom: 20,
+    padding: 18,
+    backgroundColor: "rgba(15, 23, 42, 0.03)",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
   },
   nextStepsTitle: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#1f2937",
-    marginBottom: 8,
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#0f172a",
+    marginBottom: 4,
+    letterSpacing: 0.3,
   },
   nextStepItem: {
     flexDirection: "row",
@@ -1135,34 +1666,62 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
   },
   nextStepIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 8,
-    backgroundColor: "#fff5f0",
+    width: 42,
+    height: 42,
+    borderRadius: 10,
+    backgroundColor: "rgba(255, 107, 53, 0.12)",
     alignItems: "center",
     justifyContent: "center",
   },
   nextStepText: {
     flex: 1,
     fontSize: 14,
-    fontWeight: "500",
-    color: "#1f2937",
-    lineHeight: 20,
+    fontWeight: "600",
+    color: "#1e293b",
+    lineHeight: 21,
   },
   viewAllButton: {
-    borderWidth: 1,
-    borderColor: "#d1d5db",
-    paddingVertical: 14,
+    borderWidth: 2,
+    borderColor: "#e2e8f0",
+    paddingVertical: 16,
     paddingHorizontal: 24,
-    borderRadius: 8,
+    borderRadius: 14,
     alignItems: "center",
+    marginBottom: 16,
+    backgroundColor: "#fff",
   },
   viewAllButtonText: {
     fontSize: 16,
-    fontWeight: "500",
-    color: "#1f2937",
+    fontWeight: "700",
+    color: "#1e293b",
+    letterSpacing: 0.3,
+  },
+  goToHomeButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    backgroundColor: "#FF6B35",
+    paddingVertical: 16,
+    paddingHorizontal: 28,
+    borderRadius: 14,
+    borderWidth: 0,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#FF6B35",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.35,
+        shadowRadius: 10,
+      },
+      android: { elevation: 6 },
+    }),
+  },
+  goToHomeButtonText: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#fff",
+    letterSpacing: 0.5,
   },
 });
 
 export default RentalRequestForm;
-

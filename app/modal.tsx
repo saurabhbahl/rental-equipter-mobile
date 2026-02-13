@@ -1,3 +1,10 @@
+/**
+ * MODAL SCREEN (modal.tsx)
+ * A simple modal screen that can be opened from the app.
+ * Uses ThemedText and ThemedView so it respects light/dark theme.
+ * The Link with dismissTo closes the modal and goes back to the previous screen.
+ */
+
 import { Link } from 'expo-router';
 import { StyleSheet } from 'react-native';
 

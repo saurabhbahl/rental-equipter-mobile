@@ -1,9 +1,15 @@
+/**
+ * AXIOS CLIENT (API)
+ * Shared axios instance for all API calls. Base URL is API_BASE + "/api/v1".
+ * - Request interceptor: adds a unique x-request-signature-id and User-Agent for each request.
+ * - Response interceptor: logs errors to the console and rethrows so callers can handle them.
+ * Use this client in AppContext (fetch models) and RentalRequestForm (submit lead).
+ */
 import axios, { AxiosResponse, AxiosError } from "axios";
 import { Platform } from "react-native";
 import { generateRequestId } from "./getRequestId";
 import { API_BASE } from "./useEnv";
 
-// Axios instance
 const axiosClient = axios.create({
   baseURL: API_BASE + "/api/v1",
   timeout: 30000, // Increased timeout for mobile networks
@@ -14,7 +20,7 @@ const axiosClient = axios.create({
   },
 });
 
-// Request interceptor
+// Request interceptor: add request ID and User-Agent to every request
 axiosClient.interceptors.request.use(
   async (config) => {
     config.headers["x-request-signature-id"] = generateRequestId();
@@ -27,7 +33,7 @@ axiosClient.interceptors.request.use(
   }
 );
 
-// Response interceptor with better error handling
+// Response interceptor: log errors and rethrow so callers can handle
 axiosClient.interceptors.response.use(
   (response: AxiosResponse) => {
     return response;

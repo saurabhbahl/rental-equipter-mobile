@@ -1,4 +1,9 @@
-// Import polyfill for React Native (must be imported before nanoid)
+/**
+ * REQUEST ID
+ * Generates a unique ID for each API request (mixed from timestamp and nanoid).
+ * Used by the axios client as x-request-signature-id so the server can track/log requests.
+ * The get-random-values polyfill is required in React Native before using nanoid.
+ */
 import 'react-native-get-random-values';
 import { customAlphabet } from "nanoid";
 

@@ -1,3 +1,9 @@
+/**
+ * ICON SYMBOL (iOS)
+ * On iOS we use Apple's SF Symbols via expo-symbols for a native look.
+ * This file is used when the app runs on iOS (icon-symbol.tsx is the fallback for Android/web).
+ */
+
 import { SymbolView, SymbolViewProps, SymbolWeight } from 'expo-symbols';
 import { StyleProp, ViewStyle } from 'react-native';
 
