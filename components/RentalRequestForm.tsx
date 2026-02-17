@@ -3,18 +3,20 @@
  * Step 1: ZIP code. Step 2: Choose equipment (from API models). Step 3: Start/end dates.
  * Step 4: Project details (type, company, name). Step 5: Contact (name, email, phone, comments) and Submit.
  * After submit: success step with "Go to Home" and optional "Find a location" link.
- * - Lead ID is saved in AsyncStorage so we can update the same lead as the user moves through steps.
+ * - Submission goes to Equipter-Sanity frontend /api/forms/submit (same as web rental); success fetches nearest location from /api/forms/entry.
  * - Errors are shown inline (no alert popups). Step 5 submit triggers parent to show full-screen "Submitting..." overlay.
  */
 import { useAppContext } from "@/context/AppContext";
-import { EQUIPTER_RENT_URL } from "@/lib/useEnv";
-import axiosClient from "@/lib/utils";
+import {
+  submitRentalForm,
+  fetchFormEntry,
+  type FormField,
+} from "@/lib/formSubmit";
+import { EQUIPTER_RENT_URL, FORMS_SUBMIT_URL } from "@/lib/useEnv";
 import { Ionicons, MaterialIcons } from "@expo/vector-icons";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import DateTimePicker, {
   DateTimePickerAndroid,
 } from "@react-native-community/datetimepicker";
-import { AxiosResponse } from "axios";
 import { format } from "date-fns";
 import { useRouter } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
@@ -33,6 +35,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Loader } from "./Loader";
 import { PhoneDialer } from "./PhoneDialer";
 
 // --- Date helpers (used for rental start/end dates) ---
@@ -80,7 +83,6 @@ const PROJECT_TYPES = [
 ];
 
 const totalSteps = 5;
-export const LOCAL_LEAD_KEY = "formID"; // AsyncStorage key for current lead ID
 const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
 
 /**
@@ -153,7 +155,7 @@ const RentalRequestForm: React.FC<RentalRequestFormProps> = ({
     county: "",
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const { models, fetchModels } = useAppContext();
+  const { models, formRef, fetchModels, isModelsLoading, modelError } = useAppContext();
   const [currentStep, setCurrentStep] = useState(1);
   /** Inline errors per field (no alert popups); cleared when user edits the field or changes step */
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -166,148 +168,108 @@ const RentalRequestForm: React.FC<RentalRequestFormProps> = ({
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const scrollViewRef = useRef<ScrollView>(null);
 
-  /** Build API payload from formData; overrides (e.g. step__c) merged in */
-  const buildPayload = (
-    overrides: Record<string, string | number | boolean | Date | null> = {},
-  ) => {
-    return {
-      zip__c: formData.zipCode || null,
-      help_me_choose__c:
-        Boolean(formData.equipment == "not-sure" ? true : false) || null,
-      project_type__c: formData.projectType || null,
-      email__c: formData.email?.trim() || null,
-      first_name__c: formData.firstName?.trim() || null,
-      last_name__c: formData.lastName?.trim() || null,
-      comments__c: formData.comments?.trim() || null,
-      renter_type__c: (currentStep >= 4 && formData.customerType) || null,
-      start_date__c:
-        formData.startDate != null ? new Date(formData.startDate) : null,
-      end_date__c: formData.endDate != null ? new Date(formData.endDate) : null,
-      status__c: "draft",
-      phone__c: formData.phone || null,
-      company_name__c:
-        formData.customerType == "individual_homeowner"
-          ? null
-          : formData.companyName?.trim(),
-      step__c: overrides.step__c ?? null,
-      selected_model__c:
-        formData.equipment == "not-sure" ? null : formData.equipment,
-      ...overrides,
-    };
-  };
-
   /**
-   * Create a new lead (POST) or update existing (PUT) and advance to next step on success.
-   * Only step 5 triggers onSubmittingChange so the rental page shows "Submitting..." full-screen.
+   * Submit rental form to Equipter-Sanity frontend /api/forms/submit (same as web).
+   * On success fetches entry + nearest location from /api/forms/entry/[id] and shows step 6.
    */
-  async function createOrUpdateLead(stepNumber?: number) {
-    const isFinalSubmit = currentStep === 5;
+  async function submitRentalFormFinal() {
+    if (!formRef) {
+      setApiError("Form not loaded. Please go back and try again.");
+      return;
+    }
     setIsSubmitting(true);
-    if (isFinalSubmit) onSubmittingChange?.(true);
+    onSubmittingChange?.(true);
     try {
-      const id = await AsyncStorage.getItem(LOCAL_LEAD_KEY);
-      let payload: Record<string, string | number | boolean | Date | null>;
-      let url: string;
-      let result: AxiosResponse;
-
-      if (id != null && id != undefined && id !== "") {
-        payload = buildPayload({ step__c: stepNumber || currentStep });
-        url = `/lead/${id}`;
-        result = await axiosClient.put(url, payload);
-      } else {
-        url = `/lead`;
-        payload = buildPayload({ step__c: stepNumber || currentStep });
-        result = await axiosClient.post(url, payload);
-        const leadID = result.data?.data.id;
-        await AsyncStorage.setItem(LOCAL_LEAD_KEY, String(leadID));
-      }
-
-      if (result.status == 200 || result.status == 201) {
-        setCurrentStep((prev) => (prev += 1));
-      }
-
-      if (currentStep == 5) {
-        setLocationDetails({
-          distance: result.data.data.distance,
-          phone: result.data.data.phone,
-          name: result.data.data.locName,
-          zip: result.data.data.zip,
-          country: result.data.data.country,
-          street: result.data.data.street,
-          state: result.data.data.state,
-        });
-      }
-    } catch (err: any) {
       setApiError(null);
-      setFieldErrors((prev) => ({}));
-      // Invalid ZIP: show inline error on zip field
-      if (
-        err?.response?.status === 400 &&
-        err.response.data.message == "Invalid zip code"
-      ) {
-        setFieldErrors((prev) => ({
-          ...prev,
-          zipCode:
-            "Please enter a valid ZIP code. The postal code should be valid.",
-        }));
+      const equipmentLabel =
+        formData.equipment === "not-sure"
+          ? "Not Sure - Help Me Choose"
+          : equipmentOptions.find((o) => o.value === formData.equipment)?.label ??
+            formData.equipment;
+
+      let lat = "";
+      let lng = "";
+      if (FORMS_SUBMIT_URL && formData.zipCode) {
+        try {
+          const geoRes = await fetch(
+            `${FORMS_SUBMIT_URL.replace(/\/$/, "")}/api/geocode`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ zipCode: formData.zipCode }),
+            }
+          );
+          const geo = await geoRes.json();
+          if (geo?.coordinates?.lat != null) lat = String(geo.coordinates.lat);
+          if (geo?.coordinates?.lng != null) lng = String(geo.coordinates.lng);
+        } catch (_) {}
+      }
+
+      const fields: FormField[] = [
+        { fieldId: "zipCode", fieldLabel: "ZIP Code", fieldType: "text", value: formData.zipCode || "" },
+        { fieldId: "latitude", fieldLabel: "Latitude", fieldType: "text", value: lat },
+        { fieldId: "longitude", fieldLabel: "Longitude", fieldType: "text", value: lng },
+        { fieldId: "equipment", fieldLabel: "Equipment", fieldType: "text", value: equipmentLabel },
+        { fieldId: "renterType", fieldLabel: "Renter Type", fieldType: "radio", value: formData.customerType === "company_contractor" ? "company" : "individual" },
+        { fieldId: "startDate", fieldLabel: "Start Date", fieldType: "date", value: formData.startDate ? format(formData.startDate, "yyyy-MM-dd") : "" },
+        { fieldId: "endDate", fieldLabel: "End Date", fieldType: "date", value: formData.endDate ? format(formData.endDate, "yyyy-MM-dd") : "" },
+        { fieldId: "firstName", fieldLabel: "First Name", fieldType: "text", value: formData.firstName?.trim() || "" },
+        { fieldId: "lastName", fieldLabel: "Last Name", fieldType: "text", value: formData.lastName?.trim() || "" },
+        { fieldId: "companyName", fieldLabel: "Company Name", fieldType: "text", value: formData.companyName?.trim() || "" },
+        { fieldId: "projectType", fieldLabel: "Project Type", fieldType: "text", value: formData.projectType?.trim() || "" },
+        { fieldId: "email", fieldLabel: "Email", fieldType: "email", value: formData.email?.trim() || "" },
+        { fieldId: "phone", fieldLabel: "Phone", fieldType: "tel", value: formData.phone?.trim() || "" },
+        { fieldId: "comments", fieldLabel: "Comments", fieldType: "textarea", value: formData.comments?.trim() || "" },
+      ].filter((f) => f.value !== "" || f.fieldId === "latitude" || f.fieldId === "longitude");
+
+      const result = await submitRentalForm({
+        formRef,
+        formTitle: "Rental Request Form",
+        fields,
+        metadata: {
+          equipmentId: formData.equipment || undefined,
+          equipmentName: equipmentLabel || undefined,
+        },
+      });
+
+      if (!result.success) {
+        setApiError(result.message || result.error || "Submission failed.");
         return;
       }
-      if (err?.response?.status === 429) {
-        setApiError("Too many requests. Please try again in 15 minutes.");
-        return;
-      }
-      // 404 or update failed: retry by creating a new lead and advance step
-      if (
-        err?.response?.status === 404 ||
-        err.response.data.message == "Failed to update lead"
-      ) {
-        if (formData.zipCode == null) {
-          setCurrentStep(1);
-          return;
-        }
-        await AsyncStorage.removeItem(LOCAL_LEAD_KEY);
-        const createUrl = `/lead`;
-        const createPayload = buildPayload({
-          step__c: stepNumber || currentStep,
+
+      const entryResult = await fetchFormEntry(result.entryId);
+      if (entryResult.success && entryResult.nearestLocation) {
+        const loc = entryResult.nearestLocation;
+        setLocationDetails({
+          name: loc.name ?? "",
+          street: loc.street ?? "",
+          state: loc.state ?? "",
+          zip: loc.postalCode ?? "",
+          country: "",
+          distance: loc.distance != null ? String(loc.distance) : "",
+          phone: loc.phone ?? loc.formattedPhone ?? "",
         });
-        const createResult = await axiosClient.post(createUrl, createPayload, {
-          timeout: 10000,
-        });
-        const leadID = createResult.data?.data.id;
-        await AsyncStorage.setItem(LOCAL_LEAD_KEY, String(leadID));
-        setCurrentStep((prev) => Math.min(prev + 1, totalSteps));
-        return;
       }
-      setApiError("Failed to submit. Please try again later.");
+
+      setCurrentStep(6);
+    } catch (err: any) {
+      setApiError(err?.message || "Failed to submit. Please try again later.");
     } finally {
       setIsSubmitting(false);
       onSubmittingChange?.(false);
     }
   }
 
-  /** Validate current step, then create/update lead and go to next step (or show success on step 5). */
+  /** Validate current step; steps 1-4 advance locally, step 5 submits via Equipter-Sanity forms API. */
   const handleNext = async () => {
     closeDatePickers();
     if (!(await validateCurrentStep())) return;
-    if (currentStep === 1) {
-      await createOrUpdateLead();
-      return;
-    }
-    if (currentStep === 2) {
-      await createOrUpdateLead(2);
-      return;
-    }
-    if (currentStep === 3) {
-      await createOrUpdateLead(3);
-      return;
-    }
-    if (currentStep === 4) {
-      await createOrUpdateLead(4);
+    if (currentStep <= 4) {
+      setCurrentStep((prev) => prev + 1);
       return;
     }
     if (currentStep === 5) {
-      await createOrUpdateLead(5);
-      return;
+      await submitRentalFormFinal();
     }
   };
 
@@ -465,25 +427,21 @@ const RentalRequestForm: React.FC<RentalRequestFormProps> = ({
 
   useEffect(() => {
     const initializeForm = async () => {
-      const id = await AsyncStorage.getItem(LOCAL_LEAD_KEY);
-      if (id == null || id == undefined || id == "") {
-        await AsyncStorage.clear();
-      }
-      if (models?.length == 0) {
+      if (models?.length === 0) {
         await fetchModels();
       }
     };
     initializeForm();
   }, []);
 
-  /** Build equipment list for step 2 from API models + "Not sure" option */
+  /** Build equipment list for step 2 from Sanity models + "Not sure" option */
   useEffect(() => {
     if (models?.length > 0) {
       const newEquipmentOptions = models?.map((m) => ({
         value: m?.sfid,
-        label: `Equipter ${m?.code__c}`,
-        description: m?.blurb__c,
-        thumbnail: m?.image_url__c,
+        label: m?.name__c || (m?.code__c ? `Equipter ${m.code__c}` : "Equipter"),
+        description: m?.blurb__c ?? "",
+        thumbnail: m?.image_url__c ?? "",
         video: m?.video_url__c,
       }));
       setEquipmentOptions([
@@ -498,12 +456,13 @@ const RentalRequestForm: React.FC<RentalRequestFormProps> = ({
     }
   }, [models]);
 
-  /** On success (step 6), clear stored lead ID so next rental starts fresh */
+  /** When user reaches step 2 and products are empty, retry fetch (e.g. initial load failed or was slow) */
   useEffect(() => {
-    if (currentStep == 6) {
-      AsyncStorage.removeItem(LOCAL_LEAD_KEY);
+    if (currentStep === 2 && equipmentOptions.length === 0 && !isModelsLoading) {
+      fetchModels();
     }
-  }, [currentStep]);
+  }, [currentStep, equipmentOptions.length, isModelsLoading, fetchModels]);
+
 
   /** Clear all errors when moving to a new step */
   useEffect(() => {
@@ -572,56 +531,103 @@ const RentalRequestForm: React.FC<RentalRequestFormProps> = ({
                 Select the model that best fits your project requirements
               </Text>
             </View>
-            <View
-              style={[
-                styles.equipmentList,
-                fieldErrors.equipment && styles.equipmentListError,
-              ]}
-            >
-              {equipmentOptions.map((option) => (
-                <View
-                  key={option.value}
-                  style={[
-                    styles.equipmentCard,
-                    formData.equipment === option.value &&
-                      styles.equipmentCardSelected,
-                  ]}
-                >
-                  <TouchableOpacity
-                    style={styles.equipmentCardTouchable}
-                    onPress={() => updateFormData("equipment", option.value)}
-                    activeOpacity={0.7}
-                  >
-                    <Image
-                      source={
-                        typeof option.thumbnail === "string"
-                          ? { uri: option.thumbnail }
-                          : option.thumbnail
-                      }
-                      style={styles.equipmentThumbnail}
-                    />
-                    <View style={styles.equipmentInfo}>
-                      <Text style={styles.equipmentLabel}>{option.label}</Text>
-                      <Text style={styles.equipmentDescription}>
-                        {option.description}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                  {option.video ? (
+            {equipmentOptions.length === 0 ? (
+              <View style={styles.equipmentEmptyState}>
+                {isModelsLoading ? (
+                  <>
+                    <Loader size="large" color="#FF6B35" />
+                    <Text style={styles.equipmentEmptyText}>
+                      Loading equipment...
+                    </Text>
+                  </>
+                ) : modelError ? (
+                  <>
+                    <Text style={styles.equipmentEmptyText}>
+                      Could not load equipment. Check your connection or Sanity
+                      config.
+                    </Text>
+                    <Text style={styles.equipmentEmptySubtext}>
+                      {modelError}
+                    </Text>
                     <TouchableOpacity
-                      style={styles.watchVideoButton}
-                      onPress={() => openUrl(option.video)}
+                      style={styles.retryButton}
+                      onPress={() => fetchModels()}
                       activeOpacity={0.8}
                     >
-                      <Ionicons name="play-circle" size={20} color="#fff" />
-                      <Text style={styles.watchVideoButtonText}>
-                        Watch Video
-                      </Text>
+                      <Text style={styles.retryButtonText}>Try again</Text>
                     </TouchableOpacity>
-                  ) : null}
-                </View>
-              ))}
-            </View>
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.equipmentEmptyText}>
+                      No equipment available. Please try again in a moment.
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.retryButton}
+                      onPress={() => fetchModels()}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.retryButtonText}>Retry</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+              </View>
+            ) : (
+              <View
+                style={[
+                  styles.equipmentList,
+                  fieldErrors.equipment && styles.equipmentListError,
+                ]}
+              >
+                {equipmentOptions.map((option) => (
+                  <View
+                    key={option.value}
+                    style={[
+                      styles.equipmentCard,
+                      formData.equipment === option.value &&
+                        styles.equipmentCardSelected,
+                    ]}
+                  >
+                    <TouchableOpacity
+                      style={styles.equipmentCardTouchable}
+                      onPress={() => updateFormData("equipment", option.value)}
+                      activeOpacity={0.7}
+                    >
+                      <Image
+                        source={
+                          typeof option.thumbnail === "string" &&
+                          option.thumbnail
+                            ? { uri: option.thumbnail }
+                            : option.thumbnail ||
+                              require("@/assets/images/help-choose-thumb.jpg")
+                        }
+                        style={styles.equipmentThumbnail}
+                      />
+                      <View style={styles.equipmentInfo}>
+                        <Text style={styles.equipmentLabel}>
+                          {option.label}
+                        </Text>
+                        <Text style={styles.equipmentDescription}>
+                          {option.description}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                    {option.video ? (
+                      <TouchableOpacity
+                        style={styles.watchVideoButton}
+                        onPress={() => openUrl(option.video)}
+                        activeOpacity={0.8}
+                      >
+                        <Ionicons name="play-circle" size={20} color="#fff" />
+                        <Text style={styles.watchVideoButtonText}>
+                          Watch Video
+                        </Text>
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
+                ))}
+              </View>
+            )}
             {fieldErrors.equipment ? (
               <Text style={styles.errorText}>{fieldErrors.equipment}</Text>
             ) : null}
@@ -638,39 +644,95 @@ const RentalRequestForm: React.FC<RentalRequestFormProps> = ({
                 Select your preferred rental dates
               </Text>
             </View>
-            <View style={styles.dateContainer}>
-              <View style={styles.dateInputContainer}>
-                <Text style={styles.label}>Start Date *</Text>
-                <TouchableOpacity
-                  style={[
-                    styles.dateButton,
-                    fieldErrors.startDate && styles.dateButtonError,
-                  ]}
-                  onPress={openStartDatePicker}
-                >
-                  <Text style={styles.dateButtonText} numberOfLines={1}>
-                    {formatDateForDisplay(
-                      formData.startDate,
-                      "Pick a start date",
-                    )}
-                  </Text>
-                </TouchableOpacity>
-                {fieldErrors.startDate ? (
-                  <Text style={styles.errorText}>{fieldErrors.startDate}</Text>
-                ) : null}
+            {Platform.OS === "web" ? (
+              <View style={styles.dateContainer}>
+                <View style={styles.dateInputContainer}>
+                  <Text style={styles.label}>Start Date *</Text>
+                  {React.createElement("input", {
+                    type: "date",
+                    value: formData.startDate
+                      ? format(formData.startDate, "yyyy-MM-dd")
+                      : "",
+                    min: format(today, "yyyy-MM-dd"),
+                    max: formData.endDate
+                      ? format(
+                          addDays(toDate(formData.endDate, today), -1),
+                          "yyyy-MM-dd"
+                        )
+                      : undefined,
+                    onChange: (e: { target: HTMLInputElement }) => {
+                      const v = e.target.value;
+                      if (v) updateFormData("startDate", new Date(v));
+                    },
+                    style: styles.dateInputWeb as object,
+                  })}
+                  {fieldErrors.startDate ? (
+                    <Text style={styles.errorText}>
+                      {fieldErrors.startDate}
+                    </Text>
+                  ) : null}
+                </View>
+                <View style={styles.dateInputContainer}>
+                  <Text style={styles.label}>End Date (Optional)</Text>
+                  {React.createElement("input", {
+                    type: "date",
+                    value: formData.endDate
+                      ? format(formData.endDate, "yyyy-MM-dd")
+                      : "",
+                    min: formData.startDate
+                      ? format(
+                          toDate(formData.startDate, today),
+                          "yyyy-MM-dd"
+                        )
+                      : format(today, "yyyy-MM-dd"),
+                    onChange: (e: { target: HTMLInputElement }) => {
+                      const v = e.target.value;
+                      if (v) updateFormData("endDate", new Date(v));
+                    },
+                    style: styles.dateInputWeb as object,
+                  })}
+                </View>
               </View>
-              <View style={styles.dateInputContainer}>
-                <Text style={styles.label}>End Date (Optional)</Text>
-                <TouchableOpacity
-                  style={styles.dateButton}
-                  onPress={openEndDatePicker}
-                >
-                  <Text style={styles.dateButtonText} numberOfLines={1}>
-                    {formatDateForDisplay(formData.endDate, "Pick end date")}
-                  </Text>
-                </TouchableOpacity>
+            ) : (
+              <View style={styles.dateContainer}>
+                <View style={styles.dateInputContainer}>
+                  <Text style={styles.label}>Start Date *</Text>
+                  <TouchableOpacity
+                    style={[
+                      styles.dateButton,
+                      fieldErrors.startDate && styles.dateButtonError,
+                    ]}
+                    onPress={openStartDatePicker}
+                  >
+                    <Text style={styles.dateButtonText} numberOfLines={1}>
+                      {formatDateForDisplay(
+                        formData.startDate,
+                        "Pick a start date",
+                      )}
+                    </Text>
+                  </TouchableOpacity>
+                  {fieldErrors.startDate ? (
+                    <Text style={styles.errorText}>
+                      {fieldErrors.startDate}
+                    </Text>
+                  ) : null}
+                </View>
+                <View style={styles.dateInputContainer}>
+                  <Text style={styles.label}>End Date (Optional)</Text>
+                  <TouchableOpacity
+                    style={styles.dateButton}
+                    onPress={openEndDatePicker}
+                  >
+                    <Text style={styles.dateButtonText} numberOfLines={1}>
+                      {formatDateForDisplay(
+                        formData.endDate,
+                        "Pick end date"
+                      )}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               </View>
-            </View>
+            )}
             <View style={styles.infoBox}>
               <Text style={styles.infoText}>
                 <Text style={styles.infoBold}>Typical rental rates:</Text>{" "}
@@ -1302,6 +1364,36 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 2,
   },
+  equipmentEmptyState: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 32,
+    paddingHorizontal: 24,
+    gap: 16,
+  },
+  equipmentEmptyText: {
+    fontSize: 16,
+    color: "#374151",
+    textAlign: "center",
+    fontWeight: "500",
+  },
+  equipmentEmptySubtext: {
+    fontSize: 14,
+    color: "#6b7280",
+    textAlign: "center",
+  },
+  retryButton: {
+    backgroundColor: "#FF6B35",
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 10,
+    marginTop: 8,
+  },
+  retryButtonText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "600",
+  },
   textArea: {
     height: 80,
     textAlignVertical: "top",
@@ -1399,6 +1491,18 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#1f2937",
     fontWeight: "500",
+  },
+  /** Web only: native <input type="date"> so browser date picker works. Applied via createElement. */
+  dateInputWeb: {
+    padding: 12,
+    fontSize: 16,
+    borderWidth: 1,
+    borderColor: "#d1d5db",
+    borderRadius: 8,
+    backgroundColor: "#fff",
+    color: "#1f2937",
+    minHeight: 48,
+    width: "100%",
   },
   datePickerOverlay: {
     position: "absolute",

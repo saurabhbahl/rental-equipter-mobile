@@ -35,6 +35,52 @@ npm run reset-project
 
 This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
 
+## Sanity (Equipter-Sanity) content
+
+This app reads content from the same Sanity project as **Equipter-Sanity** (studio and frontend). Set these in `.env` (see `.env.example`):
+
+| Variable | Description |
+|----------|-------------|
+| `EXPO_PUBLIC_SANITY_PROJECT_ID` | Sanity project ID (same as Equipter-Sanity studio) |
+| `EXPO_PUBLIC_SANITY_DATASET` | Dataset name, e.g. `production` or `development` |
+| `EXPO_PUBLIC_SANITY_API_VERSION` | Optional; defaults to `2025-09-25` |
+| `EXPO_PUBLIC_SANITY_API_READ_TOKEN` | Optional; use if you get **403** (see below) |
+
+**Fixing 403 Forbidden from Sanity**
+
+If the app gets `403` when loading the rental page (e.g. step 2 equipment list empty), do one of the following:
+
+1. **Use a read token (recommended for mobile)**  
+   - [sanity.io/manage](https://sanity.io/manage) → your project → **API** → **Tokens** → **Add API token**  
+   - Name it (e.g. "Mobile read"), role **Viewer**, then create.  
+   - In `.env`:  
+     `EXPO_PUBLIC_SANITY_API_READ_TOKEN=sk...`  
+   - Restart Expo. Authenticated requests are allowed even when CORS would block anonymous ones.
+
+2. **Allow CORS origin (required for Expo dev)**  
+   - Same project → **API** → **CORS origins** → **Add origin**.  
+   - Origin: **`http://localhost:8081`** (Expo dev server).  
+   - Check **Allow credentials** if you use a token.  
+   - Save. Then reload the app so requests from `http://localhost:8081` are allowed.
+
+**"Form not found" on submit**
+
+The app sends the form reference from the Sanity rental page to `FORMS_SUBMIT_URL/api/forms/submit`. If you see "Form not found. Please contact support...", then:
+
+1. In **Sanity Studio** (Equipter-Sanity): open **Rental Pages** → **Page & form** tab → set **Rental Form** to a **Form** document. Save and publish.
+2. Create a **Form** document (e.g. "Rental Request Form") if you don’t have one, then link it as above and **publish the form** (the API only sees published forms).
+3. Ensure the frontend (Heroku) uses the same dataset as the app (e.g. both `development` or both `production`).
+
+**Network error when submitting from a phone or tablet**
+
+In the browser, `http://localhost:3000` points to your computer. On a **physical device or emulator**, "localhost" is the device itself, so the request never reaches your dev server. Fix: in `.env` set `EXPO_PUBLIC_FORMS_SUBMIT_URL` to your **computer’s LAN IP** and port (e.g. `http://192.168.1.5:3000`). Find the IP from your machine (e.g. Mac: System Settings → Network, or run `ipconfig getifaddr en0`). Restart Expo after changing `.env`.
+
+- **Client:** `lib/sanity.ts`  
+- **Queries:** `lib/sanityQueries.ts` (e.g. `fetchRentalPage`, `RENTAL_PAGE_QUERY`)  
+- **Hook:** `hooks/useRentalPage.ts` → `useRentalPage()` for rental form/success content  
+
+Restart the Expo dev server after changing `.env`.
+
 ## Learn more
 
 To learn more about developing your project with Expo, look at the following resources:
