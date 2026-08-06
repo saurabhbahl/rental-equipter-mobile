@@ -38,12 +38,16 @@ export async function submitRentalForm(
     };
   }
 
+  // Backend does `new URL(sourceUrl)` to detect /es/ vs EN — must be a real absolute URL.
+  // "mobile-app" is not a valid URL and causes "Invalid URL" on submit.
+  const sourceUrl = `${base}/rental?source=mobile-app`;
+
   const body = {
     formId: payload.formRef,
     form: { _type: "reference", _ref: payload.formRef },
     formTitle: payload.formTitle || "Rental Request Form",
     submittedAt: new Date().toISOString(),
-    sourceUrl: "mobile-app",
+    sourceUrl,
     userAgent: "EquipterRentalApp",
     fields: payload.fields,
     metadata: payload.metadata || {},
