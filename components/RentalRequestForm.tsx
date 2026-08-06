@@ -1669,7 +1669,8 @@ const styles = StyleSheet.create({
         shadowOpacity: 0.15,
         shadowRadius: 12,
       },
-      android: { elevation: 6 },
+      // Android elevation draws a heavy halo; border alone is enough here.
+      android: { elevation: 0 },
     }),
   },
   successIcon: {
@@ -1709,7 +1710,7 @@ const styles = StyleSheet.create({
         shadowOpacity: 0.08,
         shadowRadius: 12,
       },
-      android: { elevation: 4 },
+      android: { elevation: 0 },
     }),
   },
   locationCardHeader: {
@@ -1817,7 +1818,7 @@ const styles = StyleSheet.create({
         shadowOpacity: 0.35,
         shadowRadius: 10,
       },
-      android: { elevation: 6 },
+      android: { elevation: 2 },
     }),
   },
   goToHomeButtonText: {
