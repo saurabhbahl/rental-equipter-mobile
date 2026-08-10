@@ -6,13 +6,31 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_FORMS_SUBMIT_URL": "https://equipter-sanity-frontend-3516a5ccf79b.herokuapp.com",
+        "EXPO_PUBLIC_SANITY_PROJECT_ID": "8wx58t5p",
+        "EXPO_PUBLIC_SANITY_DATASET": "development",
+        "EXPO_PUBLIC_SANITY_API_VERSION": "2025-09-25"
+      }
     },
     "preview": {
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_FORMS_SUBMIT_URL": "https://equipter-sanity-frontend-3516a5ccf79b.herokuapp.com",
+        "EXPO_PUBLIC_SANITY_PROJECT_ID": "8wx58t5p",
+        "EXPO_PUBLIC_SANITY_DATASET": "production",
+        "EXPO_PUBLIC_SANITY_API_VERSION": "2025-09-25"
+      }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_FORMS_SUBMIT_URL": "https://equipter-sanity-frontend-3516a5ccf79b.herokuapp.com",
+        "EXPO_PUBLIC_SANITY_PROJECT_ID": "8wx58t5p",
+        "EXPO_PUBLIC_SANITY_DATASET": "production",
+        "EXPO_PUBLIC_SANITY_API_VERSION": "2025-09-25"
+      }
     }
   },
   "submit": {

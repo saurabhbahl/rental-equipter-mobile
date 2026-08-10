@@ -8,7 +8,7 @@
 
 import { createContext, useContext, useState, ReactNode } from "react";
 import { fetchRentalPage } from "@/lib/sanityQueries";
-import { sanityImageBuilder, isSanityConfigured } from "@/lib/sanity";
+import { getSanityImageBuilder, isSanityConfigured } from "@/lib/sanity";
 
 export interface Model {
   sfid: string;
@@ -33,7 +33,7 @@ function mapProductToModel(p: any): Model {
   const slug = typeof p?.slug === "string" ? p.slug : "";
   const imageRef = p?.productHero?.backgroundImage?.asset;
   const imageUrl = imageRef
-    ? sanityImageBuilder.image(imageRef).width(600).url()
+    ? getSanityImageBuilder().image(imageRef).width(600).url()
     : "";
   const firstStat = Array.isArray(p?.stats) && p.stats[0] ? p.stats[0] : null;
   const blurb = firstStat

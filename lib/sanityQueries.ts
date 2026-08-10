@@ -3,7 +3,7 @@
  * Use with sanityClient.fetch() from lib/sanity.ts.
  */
 
-import { sanityClient, isSanityConfigured } from "./sanity";
+import { getSanityClient, isSanityConfigured } from "./sanity";
 
 /**
  * Rental page singleton – same query shape as Equipter-Sanity frontend rentalPageQuery.
@@ -83,5 +83,5 @@ export async function fetchRentalPage() {
   if (!isSanityConfigured()) {
     return null;
   }
-  return sanityClient.fetch<unknown>(RENTAL_PAGE_QUERY);
+  return getSanityClient().fetch<unknown>(RENTAL_PAGE_QUERY);
 }
